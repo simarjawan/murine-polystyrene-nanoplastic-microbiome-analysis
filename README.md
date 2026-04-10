@@ -13,6 +13,8 @@ The goal of this repository is to keep the source workflows in one cleaner locat
 
 This folder contains all tracked R Markdown files for the downstream R analyses.
 
+It also includes its own `README.md` so the R-side workflow can be understood on its own inside that directory.
+
 - `Combined_Supplementary_Figures.Rmd`
   This script builds the combined supplementary figure panels across the retained groups.
 
