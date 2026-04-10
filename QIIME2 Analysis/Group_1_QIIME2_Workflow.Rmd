@@ -1,0 +1,324 @@
+---
+title: "Group 1 QIIME2 Workflow"
+author: "Simar Jawanda"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  eval = FALSE,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+# Overview
+
+This file documents the QIIME2 workflow used for Group 1. Group 1 contains the single-end BioProject `PRJNA1209429-preg`, which was later processed into the final Group 1 analysis directory.
+
+# Step 1: Set Project Directory and QIIME2 Container
+
+```bash
+PROJ='/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/PRJNA1209429-preg'; cd "$PROJ"
+docker pull quay.io/qiime2/amplicon:2026.1
+qiime_docker () { docker run --rm -it --user "$(id -u):$(id -g)" -v "$PROJ:/data" -w /data quay.io/qiime2/amplicon:2026.1 qiime "$@"; }
+```
+
+# Step 2: Prepare FASTQ Files and Manifest
+
+```bash
+cd "$PROJ/fastq"; for f in SRR*.fastq; do [ -e "$f" ] || continue; [ -f "$f.gz" ] || gzip -c "$f" > "$f.gz"; done; cd "$PROJ"
+mkdir -p "$PROJ/manifests"
+{
+  printf "sample-id\tabsolute-filepath\n"
+  for f in "$PROJ"/fastq/SRR*.fastq.gz; do
+    [ -e "$f" ] || continue
+    s=$(basename "$f" .fastq.gz)
+    printf "%s\t/data/fastq/%s.fastq.gz\n" "$s" "$s"
+  done | sort -V
+} > "$PROJ/manifests/se.tsv"
+head -n 5 "$PROJ/manifests/se.tsv" | cat -vet
+```
+
+# Step 3: Import Reads and Summarize Demultiplexed Data
+
+```bash
+qiime_docker tools import \
+  --type 'SampleData[SequencesWithQuality]' \
+  --input-path manifests/se.tsv \
+  --input-format SingleEndFastqManifestPhred33V2 \
+  --output-path reads.qza
+
+qiime_docker demux summarize \
+  --i-data reads.qza \
+  --o-visualization reads.qzv
+```
+
+# Step 4: Test Primer Matching and Trim Reads
+
+The workbook notes show that several forward primers were tested. The best-supported match was the 338F primer because it gave a 100% match with about 91.3% to 91.4% bases retained.
+
+```bash
+qiime_docker cutadapt trim-single \
+  --i-demultiplexed-sequences reads.qza \
+  --p-front ACTCCTACGGGAGGCAGCAG \
+  --verbose \
+  --o-trimmed-sequences trim_test_338.qza
+```
+
+Notes from primer testing:
+
+- 338F was the strongest match and was treated as the final primer choice.
+- 341F was also detected at high frequency, but 338F performed slightly better.
+- 515F overtrimmed the reads.
+- 27F and 799F were not detected.
+
+Final trimming:
+
+```bash
+qiime_docker cutadapt trim-single \
+  --i-demultiplexed-sequences reads.qza \
+  --p-front ACTCCTACGGGAGGCAGCAG \
+  --p-discard-untrimmed \
+  --verbose \
+  --o-trimmed-sequences trim.qza
+
+qiime_docker demux summarize \
+  --i-data trim.qza \
+  --o-visualization trim.qzv
+```
+
+Trim note: only about 0.02% of reads were discarded, so 99.98% of reads were retained after final trimming.
+
+# Step 5: Run DADA2 Denoising
+
+```bash
+cd "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_1_PRJNA1209429"
+export PROJ="/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA"
+
+qiime_docker dada2 denoise-single \
+  --i-demultiplexed-seqs "/data/PRJNA1209429-preg/trim.qza" \
+  --p-trim-left 0 \
+  --p-trunc-len 260 \
+  --p-max-ee 2 \
+  --p-n-threads 0 \
+  --o-table "/data/Group_1_PRJNA1209429/table-dada2.qza" \
+  --o-representative-sequences "/data/Group_1_PRJNA1209429/rep-seqs-dada2.qza" \
+  --o-denoising-stats "/data/Group_1_PRJNA1209429/stats-dada2.qza" \
+  --o-base-transition-stats "/data/Group_1_PRJNA1209429/base-transition-stats.qza"
+```
+
+DADA2 note:
+
+- `260` was chosen as the truncation length because 270 was the last clearly high-quality position and a 10 bp safety buffer was used.
+- This was single-end data, so overlap did not need to be considered.
+- `--p-n-threads 0` was used to allow DADA2 to use all available cores.
+
+```bash
+qiime_docker metadata tabulate \
+  --m-input-file "/data/Group_1_PRJNA1209429/stats-dada2.qza" \
+  --o-visualization "/data/Group_1_PRJNA1209429/stats-dada2.qzv"
+```
+
+Retention note:
+
+- Passed-filter values were about 82% to 85%.
+- Final non-chimeric counts were roughly 39k to 47k reads per sample.
+
+# Step 6: Convert Metadata for QIIME2
+
+```bash
+python3 - <<'PY'
+import csv
+from pathlib import Path
+
+inp = Path("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_1_PRJNA1209429/metadata.csv")
+out = Path("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_1_PRJNA1209429/metadata_qiime.tsv")
+
+with inp.open(encoding="utf-8-sig", newline="") as f:
+    r = csv.DictReader(f)
+    cols = r.fieldnames or []
+    other = [c for c in cols if c != "Run"]
+    with out.open("w", encoding="utf-8", newline="") as g:
+        w = csv.writer(g, delimiter="\t")
+        w.writerow(["#SampleID"] + other)
+        for row in r:
+            sid = (row.get("Run") or "").strip()
+            if sid:
+                w.writerow([sid] + [row.get(c, "") for c in other])
+
+print("Wrote:", out)
+PY
+```
+
+# Step 7: Summarize the DADA2 Table and Representative Sequences
+
+```bash
+qiime_docker feature-table summarize \
+  --i-table "/data/Group_1_PRJNA1209429/table-dada2.qza" \
+  --m-metadata-file "/data/Group_1_PRJNA1209429/metadata_qiime.tsv" \
+  --o-feature-frequencies "/data/Group_1_PRJNA1209429/feature-frequencies-dada2.qza" \
+  --o-sample-frequencies "/data/Group_1_PRJNA1209429/sample-frequencies-dada2.qza" \
+  --o-summary "/data/Group_1_PRJNA1209429/table-dada2.qzv"
+
+qiime_docker feature-table tabulate-seqs \
+  --i-data "/data/Group_1_PRJNA1209429/rep-seqs-dada2.qza" \
+  --o-visualization "/data/Group_1_PRJNA1209429/rep-seqs-dada2.qzv"
+```
+
+# Step 8: Filter Low-Abundance Features
+
+```bash
+qiime_docker feature-table filter-features \
+  --i-table "/data/Group_1_PRJNA1209429/table-dada2.qza" \
+  --p-min-frequency 43 \
+  --p-min-samples 2 \
+  --o-filtered-table "/data/Group_1_PRJNA1209429/table-filt.qza"
+
+qiime_docker feature-table filter-seqs \
+  --i-data "/data/Group_1_PRJNA1209429/rep-seqs-dada2.qza" \
+  --i-table "/data/Group_1_PRJNA1209429/table-filt.qza" \
+  --o-filtered-data "/data/Group_1_PRJNA1209429/rep-seqs-filt.qza"
+```
+
+Filtering note: the workbook listed a calculated threshold of `43.3334`, which was implemented as `43`.
+
+# Step 9: Copy SILVA Reference Files and Assign Taxonomy
+
+```bash
+cp "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/PRJNA831840/silva-138-99-seqs.qza" \
+   "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_1_PRJNA1209429/"
+
+cp "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/PRJNA831840/silva-138-99-tax.qza" \
+   "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_1_PRJNA1209429/"
+
+qiime_docker feature-classifier classify-consensus-vsearch \
+  --i-query "/data/Group_1_PRJNA1209429/rep-seqs-filt.qza" \
+  --i-reference-reads "/data/Group_1_PRJNA1209429/silva-138-99-seqs.qza" \
+  --i-reference-taxonomy "/data/Group_1_PRJNA1209429/silva-138-99-tax.qza" \
+  --p-perc-identity 0.97 \
+  --p-query-cov 0.8 \
+  --p-threads 8 \
+  --o-classification "/data/Group_1_PRJNA1209429/taxonomy.qza" \
+  --o-search-results "/data/Group_1_PRJNA1209429/taxonomy_hits.qza"
+
+qiime_docker metadata tabulate \
+  --m-input-file "/data/Group_1_PRJNA1209429/taxonomy.qza" \
+  --o-visualization "/data/Group_1_PRJNA1209429/taxonomy.qzv"
+```
+
+# Step 10: Remove Mitochondria and Chloroplast Features
+
+```bash
+qiime_docker taxa filter-table \
+  --i-table "/data/Group_1_PRJNA1209429/table-filt.qza" \
+  --i-taxonomy "/data/Group_1_PRJNA1209429/taxonomy.qza" \
+  --p-include p__ \
+  --p-exclude mitochondria,chloroplast \
+  --o-filtered-table "/data/Group_1_PRJNA1209429/table-no-mc.qza"
+
+qiime_docker taxa filter-seqs \
+  --i-sequences "/data/Group_1_PRJNA1209429/rep-seqs-filt.qza" \
+  --i-taxonomy "/data/Group_1_PRJNA1209429/taxonomy.qza" \
+  --p-include p__ \
+  --p-exclude mitochondria,chloroplast \
+  --o-filtered-sequences "/data/Group_1_PRJNA1209429/rep-seqs-no-mc.qza"
+
+qiime_docker feature-table tabulate-seqs \
+  --i-data "/data/Group_1_PRJNA1209429/rep-seqs-no-mc.qza" \
+  --o-visualization "/data/Group_1_PRJNA1209429/rep-seqs-no-mc.qzv"
+```
+
+Verification note: the first five sequences in the filtered representative-sequence file were checked by BLAST and matched microbial sequences.
+
+```bash
+qiime_docker feature-table summarize \
+  --i-table "/data/Group_1_PRJNA1209429/table-no-mc.qza" \
+  --m-metadata-file "/data/Group_1_PRJNA1209429/metadata_qiime.tsv" \
+  --o-feature-frequencies "/data/Group_1_PRJNA1209429/table-no-mc-feature-freq.qza" \
+  --o-sample-frequencies "/data/Group_1_PRJNA1209429/table-no-mc-sample-freq.qza" \
+  --o-summary "/data/Group_1_PRJNA1209429/table-no-mc.qzv"
+```
+
+# Step 11: Collapse to Genus Level and Build Relative-Abundance Outputs
+
+```bash
+qiime_docker taxa collapse \
+  --i-table "/data/Group_1_PRJNA1209429/table-no-mc.qza" \
+  --i-taxonomy "/data/Group_1_PRJNA1209429/taxonomy.qza" \
+  --p-level 6 \
+  --o-collapsed-table "/data/Group_1_PRJNA1209429/table-genus.qza"
+
+qiime_docker feature-table relative-frequency \
+  --i-table "/data/Group_1_PRJNA1209429/table-genus.qza" \
+  --o-relative-frequency-table "/data/Group_1_PRJNA1209429/table-genus-relfreq.qza"
+
+qiime_docker taxa barplot \
+  --i-table "/data/Group_1_PRJNA1209429/table-no-mc.qza" \
+  --i-taxonomy "/data/Group_1_PRJNA1209429/taxonomy.qza" \
+  --m-metadata-file "/data/Group_1_PRJNA1209429/metadata_qiime.tsv" \
+  --o-visualization "/data/Group_1_PRJNA1209429/taxa-barplot.qzv"
+```
+
+# Step 12: Export Tables, Sequences and Denoising Outputs
+
+```bash
+conda create -n biom_env -c conda-forge -c bioconda python=3.10 biom-format -y
+conda activate biom_env
+
+qiime_docker tools export \
+  --input-path "/data/Group_1_PRJNA1209429/table-genus-relfreq.qza" \
+  --output-path "/data/Group_1_PRJNA1209429/exported-genus-relfreq"
+
+qiime_docker tools export \
+  --input-path "/data/Group_1_PRJNA1209429/taxonomy.qza" \
+  --output-path "/data/Group_1_PRJNA1209429/exported-taxonomy"
+
+qiime_docker tools export \
+  --input-path "/data/Group_1_PRJNA1209429/table-no-mc.qza" \
+  --output-path "/data/Group_1_PRJNA1209429/exported-asv-table"
+
+qiime_docker tools export \
+  --input-path "/data/Group_1_PRJNA1209429/rep-seqs-no-mc.qza" \
+  --output-path "/data/Group_1_PRJNA1209429/exported-rep-seqs"
+
+biom convert \
+  -i "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_1_PRJNA1209429/exported-genus-relfreq/feature-table.biom" \
+  -o "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_1_PRJNA1209429/exported-genus-relfreq/genus-relfreq.tsv" \
+  --to-tsv
+
+biom convert \
+  -i "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_1_PRJNA1209429/exported-asv-table/feature-table.biom" \
+  -o "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_1_PRJNA1209429/exported-asv-table/asv-table.tsv" \
+  --to-tsv
+
+awk 'BEGIN{FS=OFS="\t"} NR==1{print "#OTUID","taxonomy"; next} {print $1,$2}' \
+"/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_1_PRJNA1209429/exported-taxonomy/taxonomy.tsv" \
+> "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_1_PRJNA1209429/exported-taxonomy/taxonomy_for_biom.tsv"
+
+biom add-metadata \
+  -i "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_1_PRJNA1209429/exported-asv-table/feature-table.biom" \
+  -o "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_1_PRJNA1209429/exported-asv-table/feature-table_w_tax.biom" \
+  --observation-metadata-fp "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_1_PRJNA1209429/exported-taxonomy/taxonomy_for_biom.tsv" \
+  --sc-separated taxonomy
+
+biom convert \
+  -i "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_1_PRJNA1209429/exported-asv-table/feature-table_w_tax.biom" \
+  -o "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_1_PRJNA1209429/exported-asv-table/feature-table_w_tax.txt" \
+  --to-tsv \
+  --header-key taxonomy
+
+qiime_docker tools export \
+  --input-path "/data/PRJNA1209429-preg/trim.qza" \
+  --output-path "/data/Group_1_PRJNA1209429/exported-trimmed-reads"
+
+qiime_docker tools export \
+  --input-path "/data/Group_1_PRJNA1209429/stats-dada2.qza" \
+  --output-path "/data/Group_1_PRJNA1209429/exported-denoising-stats"
+```

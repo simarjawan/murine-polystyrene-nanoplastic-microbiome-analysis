@@ -1,0 +1,308 @@
+---
+title: "Group 3 QIIME2 Workflow"
+author: "Simar Jawanda"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  eval = FALSE,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+# Overview
+
+This file documents the QIIME2 workflow used for Group 3. Group 3 contains the paired-end BioProject `PRJNA831840`.
+
+The workbook notes say that primer-testing commands were run only for exploration and were not part of the final retained workflow. Those trial commands are therefore not reproduced here.
+
+# Step 1: Set Project Directory and QIIME2 Container
+
+```bash
+PROJ="/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_3_PRJNA831840"; cd "$PROJ"
+docker pull quay.io/qiime2/amplicon:2026.1
+qiime_docker () { docker run --rm -it --platform linux/amd64 --user "$(id -u):$(id -g)" -v "$PROJ:/data" -w /data quay.io/qiime2/amplicon:2026.1 qiime "$@"; }
+```
+
+# Step 2: Prepare FASTQ Files and Manifest
+
+```bash
+cd "$PROJ/fastq"; for f in SRR*.fastq; do [ -e "$f" ] || continue; s="${f%.fastq}"; gzip -c "$f" > "$s".fastq.gz; done; cd "$PROJ"
+mkdir -p manifests
+{
+  printf "sample-id\tforward-absolute-filepath\treverse-absolute-filepath\n"
+  for f in "$PROJ"/fastq/*_1.fastq.gz; do
+    [ -e "$f" ] || continue
+    s="$(basename "$f" _1.fastq.gz)"
+    r="$PROJ/fastq/${s}_2.fastq.gz"
+    [ -e "$r" ] || { echo "Missing reverse read for $s" >&2; continue; }
+    printf "%s\t%s\t%s\n" "$s" "/data/fastq/${s}_1.fastq.gz" "/data/fastq/${s}_2.fastq.gz"
+  done | sort -V
+} > manifests/pe.tsv
+head -n 5 manifests/pe.tsv | cat -vet
+```
+
+# Step 3: Import Reads and Summarize Demultiplexed Data
+
+```bash
+qiime_docker tools import \
+  --type 'SampleData[PairedEndSequencesWithQuality]' \
+  --input-path manifests/pe.tsv \
+  --input-format PairedEndFastqManifestPhred33V2 \
+  --output-path reads.qza
+
+qiime_docker demux summarize \
+  --i-data reads.qza \
+  --o-visualization reads.qzv
+```
+
+# Step 4: Proceed Without Additional Primer Trimming
+
+The retained workflow did not include a final `cutadapt` trimming step because the tested primer pairs all failed to match the deposited reads. The workbook notes state that this was interpreted as evidence that primer sequences had likely already been trimmed before SRA deposition.
+
+The quality plots from `reads.qzv` were then used directly to choose DADA2 truncation lengths.
+
+# Step 5: Run DADA2 and Retain the Final Truncation Choice
+
+```bash
+qiime_docker dada2 denoise-paired \
+  --i-demultiplexed-seqs reads.qza \
+  --p-trim-left-f 0 \
+  --p-trim-left-r 0 \
+  --p-trunc-len-f 234 \
+  --p-trunc-len-r 152 \
+  --p-max-ee-f 2 \
+  --p-max-ee-r 2 \
+  --o-table table_234_152.qza \
+  --o-representative-sequences rep-seqs_234_152.qza \
+  --o-denoising-stats denoising-stats_234_152.qza \
+  --o-base-transition-stats base-transition-stats_234_152.qza
+
+qiime_docker metadata tabulate \
+  --m-input-file denoising-stats_234_152.qza \
+  --o-visualization denoising-stats_234_152.qzv
+
+qiime_docker dada2 denoise-paired \
+  --i-demultiplexed-seqs reads.qza \
+  --p-trim-left-f 0 \
+  --p-trim-left-r 0 \
+  --p-trunc-len-f 224 \
+  --p-trunc-len-r 142 \
+  --p-max-ee-f 2 \
+  --p-max-ee-r 2 \
+  --o-table table_224_142.qza \
+  --o-representative-sequences rep-seqs_224_142.qza \
+  --o-denoising-stats denoising-stats_224_142.qza \
+  --o-base-transition-stats base-transition-stats_224_142.qza
+
+qiime_docker metadata tabulate \
+  --m-input-file denoising-stats_224_142.qza \
+  --o-visualization denoising-stats_224_142.qzv
+```
+
+Final DADA2 note:
+
+- `234/152` was tested first.
+- `224/142` was retained because it gave better values while still preserving strong hypothetical overlap and following the 10 bp buffer rule.
+
+# Step 6: Convert Metadata for QIIME2
+
+```bash
+python3 - <<'PY'
+import csv
+
+infile = "metadata.csv"
+outfile = "metadata.tsv"
+
+with open(infile, newline="", encoding="utf-8-sig") as fin:
+    rows = list(csv.reader(fin))
+
+if not rows:
+    raise SystemExit("metadata.csv is empty")
+
+rows[0][0] = "#Sample ID"
+
+with open(outfile, "w", newline="", encoding="utf-8") as fout:
+    writer = csv.writer(fout, delimiter="\t", lineterminator="\n")
+    writer.writerows(rows)
+
+print(f"Wrote {outfile}")
+PY
+
+python3 - <<'PY'
+import csv
+p="metadata.tsv"
+rows=list(csv.reader(open(p), delimiter="\t"))
+hdr=rows[0]
+hdr=[("orig_ID" if h=="ID" else h) for h in hdr]
+rows[0]=hdr
+with open(p,"w",newline="") as f:
+    csv.writer(f,delimiter="\t",lineterminator="\n").writerows(rows)
+print("Renamed column 'ID' -> 'orig_ID' in metadata.tsv")
+PY
+```
+
+# Step 7: Remove the Kit Control Sample
+
+```bash
+qiime_docker feature-table filter-samples \
+  --i-table table_224_142.qza \
+  --m-metadata-file metadata.tsv \
+  --p-where "[#Sample ID] != 'SRR18914140'" \
+  --o-filtered-table table_no_control.qza
+```
+
+Filter note: `SRR18914140` was removed as the kit control sample.
+
+```bash
+qiime_docker feature-table summarize \
+  --i-table table_no_control.qza \
+  --o-feature-frequencies feature-frequencies_no_control.qza \
+  --o-sample-frequencies sample-frequencies_no_control.qza \
+  --o-summary table_no_control_summary.qzv
+
+qiime_docker feature-table tabulate-seqs \
+  --i-data rep-seqs_224_142.qza \
+  --o-visualization rep-seqs_224_142.qzv
+```
+
+# Step 8: Filter Low-Abundance Features and Assign Taxonomy
+
+```bash
+qiime_docker feature-table filter-features \
+  --i-table table_no_control.qza \
+  --p-min-frequency 33 \
+  --p-min-samples 2 \
+  --o-filtered-table table_filtered.qza
+
+qiime_docker feature-table filter-seqs \
+  --i-data rep-seqs_224_142.qza \
+  --i-table table_filtered.qza \
+  --o-filtered-data rep-seqs_filtered.qza
+
+qiime_docker feature-classifier classify-consensus-vsearch \
+  --i-query rep-seqs_filtered.qza \
+  --i-reference-reads silva-138-99-seqs.qza \
+  --i-reference-taxonomy silva-138-99-tax.qza \
+  --p-perc-identity 0.97 \
+  --p-query-cov 0.8 \
+  --p-threads 8 \
+  --o-classification taxonomy.qza \
+  --o-search-results taxonomy_hits.qza
+
+qiime_docker metadata tabulate \
+  --m-input-file taxonomy.qza \
+  --o-visualization taxonomy.qzv
+```
+
+Filtering note: the workbook recorded a calculated cutoff of `32.655`, which was implemented as `33`.
+
+# Step 9: Remove Mitochondria and Chloroplast Features
+
+```bash
+qiime_docker taxa filter-table \
+  --i-table table_filtered.qza \
+  --i-taxonomy taxonomy.qza \
+  --p-exclude mitochondria,chloroplast \
+  --o-filtered-table table_no_mc.qza
+
+qiime_docker taxa filter-seqs \
+  --i-sequences rep-seqs_filtered.qza \
+  --i-taxonomy taxonomy.qza \
+  --p-exclude mitochondria,chloroplast \
+  --o-filtered-sequences rep-seqs_no_mc.qza
+
+qiime_docker feature-table tabulate-seqs \
+  --i-data rep-seqs_no_mc.qza \
+  --o-visualization rep-seqs_no_mc.qzv
+```
+
+Verification note: the first five filtered sequences were checked by BLAST and matched microbial sequences.
+
+```bash
+qiime_docker feature-table summarize \
+  --i-table table_no_mc.qza \
+  --m-metadata-file metadata.tsv \
+  --o-feature-frequencies table-no-mc-feature-freq.qza \
+  --o-sample-frequencies table-no-mc-sample-freq.qza \
+  --o-summary table-no-mc.qzv
+```
+
+# Step 10: Collapse to Genus Level and Export Final Outputs
+
+```bash
+qiime_docker taxa collapse \
+  --i-table table_no_mc.qza \
+  --i-taxonomy taxonomy.qza \
+  --p-level 6 \
+  --o-collapsed-table table-genus.qza
+
+qiime_docker feature-table relative-frequency \
+  --i-table table-genus.qza \
+  --o-relative-frequency-table table-genus-relfreq.qza
+
+qiime_docker taxa barplot \
+  --i-table table_no_mc.qza \
+  --i-taxonomy taxonomy.qza \
+  --m-metadata-file metadata.tsv \
+  --o-visualization taxa-barplot-no-mc.qzv
+
+conda activate biom_env
+
+qiime_docker tools export \
+  --input-path table-genus-relfreq.qza \
+  --output-path exported-genus-relfreq
+
+qiime_docker tools export \
+  --input-path taxonomy.qza \
+  --output-path exported-taxonomy
+
+qiime_docker tools export \
+  --input-path table_no_mc.qza \
+  --output-path exported-asv-table
+
+qiime_docker tools export \
+  --input-path rep-seqs_no_mc.qza \
+  --output-path exported-rep-seqs
+
+biom convert \
+  -i exported-genus-relfreq/feature-table.biom \
+  -o exported-genus-relfreq/genus-relfreq.tsv \
+  --to-tsv
+
+biom convert \
+  -i exported-asv-table/feature-table.biom \
+  -o exported-asv-table/asv-table.tsv \
+  --to-tsv
+
+awk 'BEGIN{FS=OFS="\t"} NR==1{print "#OTUID","taxonomy"; next} {print $1,$2}' \
+exported-taxonomy/taxonomy.tsv > exported-taxonomy/taxonomy_for_biom.tsv
+
+biom add-metadata \
+  -i exported-asv-table/feature-table.biom \
+  -o exported-asv-table/feature-table_w_tax.biom \
+  --observation-metadata-fp exported-taxonomy/taxonomy_for_biom.tsv \
+  --sc-separated taxonomy
+
+biom convert \
+  -i exported-asv-table/feature-table_w_tax.biom \
+  -o exported-asv-table/feature-table_w_tax.tsv \
+  --to-tsv \
+  --header-key taxonomy
+
+qiime_docker tools export \
+  --input-path denoising-stats_224_142.qza \
+  --output-path exported-denoising-stats
+
+qiime_docker tools export \
+  --input-path reads.qza \
+  --output-path exported-reads
+```

@@ -40,7 +40,19 @@ This folder contains all tracked R Markdown files for the downstream R analyses.
 
 ### `QIIME2 Analysis/`
 
-This folder is reserved for the QIIME2 side of the project. It is included so the repository clearly separates the downstream R analysis from the upstream QIIME2 processing workflow.
+This folder contains the QIIME2 command-log R Markdown files that document the upstream sequence-processing workflow for each retained analysis group.
+
+- `Group_1_QIIME2_Workflow.Rmd`
+  This file documents the single-end QIIME2 workflow used for Group 1, including primer trimming, DADA2 denoising, taxonomy assignment and export steps.
+
+- `Group_2_QIIME2_Workflow.Rmd`
+  This file documents the three-study grouped QIIME2 workflow used for Group 2, including study-level trimming, grouped DADA2 processing, metadata merging, final sample filtering and downstream taxonomy/export steps.
+
+- `Group_3_QIIME2_Workflow.Rmd`
+  This file documents the final retained QIIME2 workflow used for Group 3. It records the paired-end denoising, metadata conversion, control filtering, taxonomy assignment and export steps. Primer-testing commands were left out because they were not part of the final retained workflow.
+
+- `Group_4_FINAL_QIIME2_Workflow.Rmd`
+  This file documents the final paired-end QIIME2 workflow used for Group 4, including primer trimming, denoising, final sample filtering, taxonomy assignment and export steps.
 
 ## How To Use The Repository
 
@@ -48,6 +60,7 @@ This folder is reserved for the QIIME2 side of the project. It is included so th
 2. Use `Group_2_Exploratory_By_Project.Rmd` only if you want the project-separated exploratory view for Group 2.
 3. Use `Top30_Sensitivity_Analysis.Rmd` and the files in `LEfSe LDA1 Analysis/` for supporting sensitivity or exploratory analyses rather than the main thesis workflow.
 4. Use `Combined_Supplementary_Figures.Rmd` after the group-level outputs it depends on have already been generated locally.
+5. Use the files in `QIIME2 Analysis/` if you want the step-by-step command workflow that produced the QIIME2 outputs used in the downstream R analyses.
 
 ## Important Notes
 

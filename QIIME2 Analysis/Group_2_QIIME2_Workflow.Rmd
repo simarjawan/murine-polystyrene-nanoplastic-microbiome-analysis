@@ -1,0 +1,565 @@
+---
+title: "Group 2 QIIME2 Workflow"
+author: "Simar Jawanda"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  eval = FALSE,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+# Overview
+
+This file documents the QIIME2 workflow used for Group 2. Group 2 combines three paired-end BioProjects:
+
+- `PRJNA1158308`
+- `PRJNA1357312`
+- `PRJNA944557`
+
+The final grouped workflow was run on the merged trimmed reads after study-level preprocessing.
+
+# Step 1: Study-Level Setup
+
+## PRJNA1158308
+
+```bash
+PROJ='/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/PRJNA1158308'; cd "$PROJ"
+docker pull quay.io/qiime2/amplicon:2026.1
+qiime_docker () { docker run --rm -it --user "$(id -u):$(id -g)" -v "$PROJ:/data" -w /data quay.io/qiime2/amplicon:2026.1 qiime "$@"; }
+cd "$PROJ/fastq"; for f in SRR*_1.fastq SRR*_2.fastq; do [ -e "$f" ] || continue; [ -f "$f.gz" ] || gzip -c "$f" > "$f.gz"; done; cd "$PROJ"
+mkdir -p "$PROJ/manifests"
+{
+  printf "sample-id\tforward-absolute-filepath\treverse-absolute-filepath\n"
+  for f in "$PROJ"/fastq/SRR*_1.fastq.gz; do
+    [ -e "$f" ] || continue
+    s=$(basename "$f" _1.fastq.gz)
+    r="$PROJ/fastq/${s}_2.fastq.gz"
+    [ -f "$r" ] && printf "%s\t/data/fastq/%s_1.fastq.gz\t/data/fastq/%s_2.fastq.gz\n" "$s" "$s" "$s"
+  done | sort -V
+} > "$PROJ/manifests/pe.tsv"
+head -n 5 "$PROJ/manifests/pe.tsv" | cat -vet
+
+qiime_docker tools import \
+  --type 'SampleData[PairedEndSequencesWithQuality]' \
+  --input-path manifests/pe.tsv \
+  --input-format PairedEndFastqManifestPhred33V2 \
+  --output-path reads.qza
+
+qiime_docker demux summarize \
+  --i-data reads.qza \
+  --o-visualization reads.qzv
+
+qiime_docker cutadapt trim-paired \
+  --i-demultiplexed-sequences reads.qza \
+  --p-front-f ACTCCTACGGGAGGCAGCAG \
+  --p-front-r GGACTACHVGGGTWTCTAAT \
+  --verbose \
+  --o-trimmed-sequences trim.qza
+
+qiime_docker cutadapt trim-paired \
+  --i-demultiplexed-sequences reads.qza \
+  --p-front-f ACTCCTACGGGAGGCAGCAG \
+  --p-front-r GGACTACHVGGGTWTCTAAT \
+  --p-discard-untrimmed \
+  --verbose \
+  --o-trimmed-sequences trim.qza
+
+qiime_docker demux summarize \
+  --i-data trim.qza \
+  --o-visualization trim.qzv
+```
+
+Notes:
+
+- 338F/806R primers were detected clearly.
+- Final discard rate was about 0.2%.
+
+## PRJNA1357312
+
+```bash
+PROJ='/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/PRJNA1357312'; cd "$PROJ"
+docker pull quay.io/qiime2/amplicon:2026.1
+qiime_docker () { docker run --rm -it --user "$(id -u):$(id -g)" -v "$PROJ:/data" -w /data quay.io/qiime2/amplicon:2026.1 qiime "$@"; }
+cd "$PROJ/fastq"; for f in SRR*_1.fastq SRR*_2.fastq; do [ -e "$f" ] || continue; [ -f "$f.gz" ] || gzip -c "$f" > "$f.gz"; done; cd "$PROJ"
+mkdir -p "$PROJ/manifests"
+{
+  printf "sample-id\tforward-absolute-filepath\treverse-absolute-filepath\n"
+  for f in "$PROJ"/fastq/SRR*_1.fastq.gz; do
+    [ -e "$f" ] || continue
+    s=$(basename "$f" _1.fastq.gz)
+    r="$PROJ/fastq/${s}_2.fastq.gz"
+    [ -f "$r" ] && printf "%s\t/data/fastq/%s_1.fastq.gz\t/data/fastq/%s_2.fastq.gz\n" "$s" "$s" "$s"
+  done | sort -V
+} > "$PROJ/manifests/pe.tsv"
+head -n 5 "$PROJ/manifests/pe.tsv" | cat -vet
+
+qiime_docker tools import \
+  --type 'SampleData[PairedEndSequencesWithQuality]' \
+  --input-path manifests/pe.tsv \
+  --input-format PairedEndFastqManifestPhred33V2 \
+  --output-path reads.qza
+
+qiime_docker demux summarize \
+  --i-data reads.qza \
+  --o-visualization reads.qzv
+
+qiime_docker cutadapt trim-paired \
+  --i-demultiplexed-sequences reads.qza \
+  --p-front-f TACGGRAGGCAGCAG \
+  --p-front-r AGGGTATCTAATCCT \
+  --verbose \
+  --o-trimmed-sequences trim.qza
+
+qiime_docker cutadapt trim-paired \
+  --i-demultiplexed-sequences reads.qza \
+  --p-front-f TACGGRAGGCAGCAG \
+  --p-front-r AGGGTATCTAATCCT \
+  --p-discard-untrimmed \
+  --verbose \
+  --o-trimmed-sequences trim.qza
+
+qiime_docker cutadapt trim-paired \
+  --i-demultiplexed-sequences reads.qza \
+  --p-front-f CCTACGGGNGGCWGCAG \
+  --p-front-r GACTACHVGGGTATCTAATCC \
+  --verbose \
+  --o-trimmed-sequences trim.qza
+
+qiime_docker cutadapt trim-paired \
+  --i-demultiplexed-sequences reads.qza \
+  --p-front-f CCTACGGGNGGCWGCAG \
+  --p-front-r GACTACHVGGGTATCTAATCC \
+  --p-discard-untrimmed \
+  --verbose \
+  --o-trimmed-sequences trim.qza
+
+qiime_docker demux summarize \
+  --i-data trim.qza \
+  --o-visualization trim.qzv
+```
+
+Notes:
+
+- The paper reported truncated primer versions, which were first tested directly.
+- Full-length 338F/806R-compatible primers were then used to keep this study comparable with the grouped workflow.
+- Final discard rate after the full-length trim was about 2.1%.
+
+## PRJNA944557
+
+```bash
+PROJ='/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/PRJNA944557'; cd "$PROJ"
+docker pull quay.io/qiime2/amplicon:2026.1
+qiime_docker () { docker run --rm -it --user "$(id -u):$(id -g)" -v "$PROJ:/data" -w /data quay.io/qiime2/amplicon:2026.1 qiime "$@"; }
+cd "$PROJ/fastq"; for f in SRR*_1.fastq SRR*_2.fastq; do [ -e "$f" ] || continue; [ -f "$f.gz" ] || gzip -c "$f" > "$f.gz"; done; cd "$PROJ"
+mkdir -p "$PROJ/manifests"
+{
+  printf "sample-id\tforward-absolute-filepath\treverse-absolute-filepath\n"
+  for f in "$PROJ"/fastq/SRR*_1.fastq.gz; do
+    [ -e "$f" ] || continue
+    s=$(basename "$f" _1.fastq.gz)
+    r="$PROJ/fastq/${s}_2.fastq.gz"
+    [ -f "$r" ] && printf "%s\t/data/fastq/%s_1.fastq.gz\t/data/fastq/%s_2.fastq.gz\n" "$s" "$s" "$s"
+  done | sort -V
+} > "$PROJ/manifests/pe.tsv"
+head -n 5 "$PROJ/manifests/pe.tsv" | cat -vet
+
+qiime_docker tools import \
+  --type 'SampleData[PairedEndSequencesWithQuality]' \
+  --input-path manifests/pe.tsv \
+  --input-format PairedEndFastqManifestPhred33V2 \
+  --output-path reads.qza
+
+qiime_docker demux summarize \
+  --i-data reads.qza \
+  --o-visualization reads.qzv
+
+qiime_docker cutadapt trim-paired \
+  --i-demultiplexed-sequences reads.qza \
+  --p-front-f ACTCCTACGGGAGGCAGCAG \
+  --p-front-r GGACTACHVGGGTWTCTAAT \
+  --verbose \
+  --o-trimmed-sequences trim.qza
+
+qiime_docker cutadapt trim-paired \
+  --i-demultiplexed-sequences reads.qza \
+  --p-front-f ACTCCTACGGGAGGCAGCAG \
+  --p-front-r GGACTACHVGGGTWTCTAAT \
+  --p-discard-untrimmed \
+  --verbose \
+  --o-trimmed-sequences trim.qza
+
+qiime_docker demux summarize \
+  --i-data trim.qza \
+  --o-visualization trim.qzv
+```
+
+Notes:
+
+- 338F/806R primer trimming was supported.
+- Final discard rate was about 1.5%.
+
+# Step 2: Merge the Three Trimmed Studies
+
+```bash
+PROJ="/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group 2"; cd "$PROJ"
+
+qiime_docker fondue combine-seqs \
+  --i-seqs /data/PRJNA944557/trim.qza \
+  --i-seqs /data/PRJNA1357312/trim.qza \
+  --i-seqs /data/PRJNA1158308/trim.qza \
+  --p-on-duplicates error \
+  --o-combined-seqs /data/Group\ 2/trim_merged.qza
+
+qiime_docker demux summarize \
+  --i-data /data/Group\ 2/trim_merged.qza \
+  --o-visualization /data/Group\ 2/trim_merged.qzv
+```
+
+Merge note: the forward and reverse read totals from the three trimmed studies were checked against the merged output and matched, confirming a successful merge.
+
+# Step 3: Run Joint DADA2 Denoising
+
+The workbook shows that DADA2 was tested twice. The first run at `223/223` did not meet the practical 20 bp overlap target, so the final retained run used `224/224`.
+
+```bash
+qiime_docker dada2 denoise-paired \
+  --i-demultiplexed-seqs /data/Group\ 2/trim_merged.qza \
+  --p-trim-left-f 0 \
+  --p-trim-left-r 0 \
+  --p-trunc-len-f 223 \
+  --p-trunc-len-r 223 \
+  --p-max-ee-f 2 \
+  --p-max-ee-r 2 \
+  --p-n-threads 8 \
+  --o-table /data/Group\ 2/table_223_223.qza \
+  --o-representative-sequences /data/Group\ 2/rep-seqs_223_223.qza \
+  --o-denoising-stats /data/Group\ 2/denoising-stats_223_223.qza \
+  --o-base-transition-stats /data/Group\ 2/base-transition-stats_223_223.qza
+
+qiime_docker metadata tabulate \
+  --m-input-file /data/Group\ 2/denoising-stats_223_223.qza \
+  --o-visualization /data/Group\ 2/denoising-stats_223_223.qzv
+
+qiime_docker dada2 denoise-paired \
+  --i-demultiplexed-seqs "trim_merged.qza" \
+  --p-trim-left-f 0 \
+  --p-trim-left-r 0 \
+  --p-trunc-len-f 224 \
+  --p-trunc-len-r 224 \
+  --p-max-ee-f 2 \
+  --p-max-ee-r 2 \
+  --p-n-threads 8 \
+  --o-table "table_224_224.qza" \
+  --o-representative-sequences "rep-seqs_224_224.qza" \
+  --o-denoising-stats "denoising-stats_224_224.qza" \
+  --o-base-transition-stats "base-transition-stats_224_224.qza"
+
+qiime_docker metadata tabulate \
+  --m-input-file "denoising-stats_224_224.qza" \
+  --o-visualization "denoising-stats_224_224.qzv"
+```
+
+Final DADA2 note:
+
+- `224/224` was kept because it preserved at least 20 bp overlap while keeping as much sequence as possible.
+
+# Step 4: Build Merged Metadata
+
+```bash
+python3 - <<'PY'
+import csv
+from pathlib import Path
+
+src = Path("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/16S Analysis/metadata.csv files")
+files = ["PRJNA944557.csv", "PRJNA1158308.csv", "PRJNA1357312.csv"]
+out = Path("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group 2/metadata_merged_group2.csv")
+out.parent.mkdir(parents=True, exist_ok=True)
+
+def read_table(fp):
+    with fp.open("r", encoding="utf-8-sig", newline="") as f:
+        lines = [ln.rstrip("\n\r") for ln in f if ln.strip()]
+    hidx = None
+    for i, ln in enumerate(lines):
+        if ln.startswith("Run,") or ln.startswith("#SampleID,") or ln.startswith("SampleID,"):
+            hidx = i
+            break
+    if hidx is None:
+        raise SystemExit(f"Could not find header in {fp}")
+    rows = list(csv.reader(lines[hidx:], delimiter=","))
+    header = rows[0]
+    data = rows[1:]
+    return header, data
+
+all_cols = []
+seen = set()
+tables = []
+
+for name in files:
+    fp = src / name
+    hdr, data = read_table(fp)
+    tables.append((hdr, data))
+    for c in hdr:
+        c = c.strip()
+        if c and c not in seen:
+            seen.add(c)
+            all_cols.append(c)
+
+if "Run" in all_cols:
+    all_cols.remove("Run")
+if "#SampleID" in all_cols:
+    all_cols.remove("#SampleID")
+if "SampleID" in all_cols:
+    all_cols.remove("SampleID")
+header_out = ["Run"] + all_cols
+
+merged = []
+for hdr, data in tables:
+    idx = {h:i for i,h in enumerate(hdr)}
+    for r in data:
+        if not r:
+            continue
+        row = {c:"" for c in header_out}
+        sid = ""
+        for key in ["Run", "#SampleID", "SampleID"]:
+            if key in idx and idx[key] < len(r):
+                sid = r[idx[key]].strip()
+                if sid:
+                    break
+        if not sid:
+            continue
+        row["Run"] = sid
+        for c in all_cols:
+            j = idx.get(c, None)
+            row[c] = r[j].strip() if j is not None and j < len(r) else ""
+        merged.append(row)
+
+with out.open("w", newline="", encoding="utf-8") as f:
+    w = csv.DictWriter(f, fieldnames=header_out)
+    w.writeheader()
+    w.writerows(merged)
+
+print("Wrote:", out)
+print("Rows:", len(merged))
+print("Columns:", len(header_out))
+PY
+
+python3 - <<'PY'
+import csv
+
+inp = "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group 2/metadata_merged_group2.csv"
+out = "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group 2/metadata_merged_group2.tsv"
+
+with open(inp, newline="", encoding="utf-8-sig") as f:
+    rows = list(csv.reader(f))
+
+if not rows:
+    raise SystemExit("CSV is empty")
+
+rows[0][0] = "#SampleID"
+
+with open(out, "w", newline="", encoding="utf-8") as f:
+    csv.writer(f, delimiter="\t", lineterminator="\n").writerows(rows)
+
+print("Wrote:", out)
+PY
+
+python3 - <<'PY'
+import csv
+
+p = "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group 2/metadata_merged_group2.tsv"
+
+with open(p, newline="", encoding="utf-8-sig") as f:
+    rows = list(csv.reader(f, delimiter="\t"))
+
+hdr = rows[0]
+seen = {}
+fixed = []
+for h in hdr:
+    h = (h or "").strip() or "col"
+    if h in seen:
+        seen[h] += 1
+        fixed.append(f"{h}_{seen[h]}")
+    else:
+        seen[h] = 0
+        fixed.append(h)
+
+fixed[0] = "#SampleID"
+rows[0] = fixed
+
+with open(p, "w", newline="", encoding="utf-8") as f:
+    csv.writer(f, delimiter="\t", lineterminator="\n").writerows(rows)
+
+print("Fixed duplicate headers in:", p)
+PY
+```
+
+Metadata note:
+
+- The merged metadata file was annotated with study accession, simplified grouping and PS-NP versus PS-MP labels.
+- The sheet notes also record that size labels for `PRJNA944557` were inferred from the study coding when building the grouped metadata.
+
+# Step 5: Filter Group 2 to the Final Comparison Set
+
+```bash
+qiime_docker feature-table filter-samples \
+  --i-table "table_224_224.qza" \
+  --m-metadata-file "metadata_merged_group2.tsv" \
+  --p-where "[group_simple] IN ('control','psnp') AND [#SampleID] NOT IN ('SRR30591053','SRR30591054','SRR30591055','SRR30591056','SRR30591057','SRR30591058','SRR30591059','SRR30591060')" \
+  --o-filtered-table "table_224_224_psnp_control_no-failed.qza"
+```
+
+Filter note:
+
+- This step removed non-target cofactor runs, PS-MP runs and the eight failed sequencing runs listed above.
+
+```bash
+qiime_docker feature-table summarize \
+  --i-table "table_224_224_psnp_control_no-failed.qza" \
+  --m-metadata-file "metadata_merged_group2.tsv" \
+  --o-feature-frequencies "table_224_224_psnp_control_no-failed_feature-freq.qza" \
+  --o-sample-frequencies "table_224_224_psnp_control_no-failed_sample-freq.qza" \
+  --o-summary "table_224_224_psnp_control_no-failed.qzv"
+
+qiime_docker feature-table tabulate-seqs \
+  --i-data "rep-seqs_224_224.qza" \
+  --o-visualization "rep-seqs_224_224.qzv"
+```
+
+# Step 6: Filter Low-Abundance Features and Assign Taxonomy
+
+```bash
+qiime_docker feature-table filter-features \
+  --i-table "table_224_224_psnp_control_no-failed.qza" \
+  --p-min-frequency 73 \
+  --p-min-samples 2 \
+  --o-filtered-table "table_224_224_psnp_control_no-failed_filtered.qza"
+
+qiime_docker feature-table filter-seqs \
+  --i-data "rep-seqs_224_224.qza" \
+  --i-table "table_224_224_psnp_control_no-failed_filtered.qza" \
+  --o-filtered-data "rep-seqs_224_224_psnp_control_no-failed_filtered.qza"
+
+qiime_docker feature-classifier classify-consensus-vsearch \
+  --i-query "rep-seqs_224_224_psnp_control_no-failed_filtered.qza" \
+  --i-reference-reads "silva-138-99-seqs.qza" \
+  --i-reference-taxonomy "silva-138-99-tax.qza" \
+  --p-perc-identity 0.97 \
+  --p-query-cov 0.8 \
+  --p-threads 8 \
+  --o-classification "taxonomy.qza" \
+  --o-search-results "taxonomy_hits.qza"
+
+qiime_docker metadata tabulate \
+  --m-input-file "taxonomy.qza" \
+  --o-visualization "taxonomy.qzv"
+```
+
+Filtering note: the computed threshold in the sheet was `73.0193`, which was implemented as `73`.
+
+# Step 7: Remove Mitochondria and Chloroplast Features
+
+```bash
+qiime_docker taxa filter-table \
+  --i-table "table_224_224_psnp_control_no-failed_filtered.qza" \
+  --i-taxonomy "taxonomy.qza" \
+  --p-exclude mitochondria,chloroplast \
+  --o-filtered-table "table_no_mc.qza"
+
+qiime_docker taxa filter-seqs \
+  --i-sequences "rep-seqs_224_224_psnp_control_no-failed_filtered.qza" \
+  --i-taxonomy "taxonomy.qza" \
+  --p-exclude mitochondria,chloroplast \
+  --o-filtered-sequences "rep-seqs_no_mc.qza"
+
+qiime_docker feature-table tabulate-seqs \
+  --i-data "rep-seqs_no_mc.qza" \
+  --o-visualization "rep-seqs_no_mc.qzv"
+
+qiime_docker feature-table summarize \
+  --i-table "table_no_mc.qza" \
+  --m-metadata-file "metadata_merged_group2.tsv" \
+  --o-feature-frequencies "table-no-mc-feature-freq.qza" \
+  --o-sample-frequencies "table-no-mc-sample-freq.qza" \
+  --o-summary "table-no-mc.qzv"
+```
+
+# Step 8: Collapse to Genus Level and Export Final Outputs
+
+```bash
+qiime_docker taxa collapse \
+  --i-table "table_no_mc.qza" \
+  --i-taxonomy "taxonomy.qza" \
+  --p-level 6 \
+  --o-collapsed-table "table-genus.qza"
+
+qiime_docker feature-table relative-frequency \
+  --i-table "table-genus.qza" \
+  --o-relative-frequency-table "table-genus-relfreq.qza"
+
+qiime_docker taxa barplot \
+  --i-table "table_no_mc.qza" \
+  --i-taxonomy "taxonomy.qza" \
+  --m-metadata-file "metadata_merged_group2.tsv" \
+  --o-visualization "taxa-barplot-no-mc.qzv"
+
+conda activate biom_env
+
+qiime_docker tools export \
+  --input-path "table-genus-relfreq.qza" \
+  --output-path "exported-genus-relfreq"
+
+qiime_docker tools export \
+  --input-path "taxonomy.qza" \
+  --output-path "exported-taxonomy"
+
+qiime_docker tools export \
+  --input-path "table_no_mc.qza" \
+  --output-path "exported-asv-table"
+
+qiime_docker tools export \
+  --input-path "rep-seqs_no_mc.qza" \
+  --output-path "exported-rep-seqs"
+
+biom convert \
+  -i "exported-genus-relfreq/feature-table.biom" \
+  -o "exported-genus-relfreq/genus-relfreq.tsv" \
+  --to-tsv
+
+biom convert \
+  -i "exported-asv-table/feature-table.biom" \
+  -o "exported-asv-table/asv-table.tsv" \
+  --to-tsv
+
+awk 'BEGIN{FS=OFS="\t"} NR==1{print "#OTUID","taxonomy";next}{print $1,$2}' \
+  "exported-taxonomy/taxonomy.tsv" > "exported-taxonomy/taxonomy_for_biom.tsv"
+
+biom add-metadata \
+  -i "exported-asv-table/feature-table.biom" \
+  -o "exported-asv-table/feature-table_w_tax.biom" \
+  --observation-metadata-fp "exported-taxonomy/taxonomy_for_biom.tsv" \
+  --sc-separated taxonomy
+
+biom convert \
+  -i "exported-asv-table/feature-table_w_tax.biom" \
+  -o "exported-asv-table/feature-table_w_tax.tsv" \
+  --to-tsv \
+  --header-key taxonomy
+
+qiime_docker tools export \
+  --input-path "denoising-stats_224_224.qza" \
+  --output-path "exported-denoising-stats"
+
+qiime_docker tools export \
+  --input-path "rep-seqs_224_224.qza" \
+  --output-path "exported-reads"
+```
