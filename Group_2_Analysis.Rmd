@@ -1,0 +1,2208 @@
+---
+title: "Group 2 Microbiome Analysis"
+author: "Simar Jawanda"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  out.width = "100%",
+  dev = "png",
+  fig.ext = "png",
+  dpi = 300
+)
+```
+
+# Step 1: Install and Load Packages
+
+```{r}
+required_packages <- c(
+  "broom",
+  "coin",
+  "dplyr",
+  "ggplot2",
+  "patchwork",
+  "rstatix",
+  "tidyr",
+  "tibble",
+  "vegan",
+  "scales",
+  "ggh4x"
+)
+
+missing_packages <- required_packages[!required_packages %in% rownames(installed.packages())]
+
+if (length(missing_packages) > 0) {
+  install.packages(missing_packages)
+}
+
+library(broom)
+library(coin)
+library(dplyr)
+library(ggplot2)
+library(rstatix)
+library(tidyr)
+library(tibble)
+library(vegan)
+library(scales)
+library(ggh4x)
+
+wrap_figure_title <- function(title_text, width = 56) {
+  paste(strwrap(title_text, width = width), collapse = "\n")
+}
+
+finalize_thesis_plot <- function(plot, legend = c("none", "plain", "italic")) {
+  legend <- match.arg(legend)
+
+  if (!is.null(plot$labels$x) && identical(plot$labels$x, "Condition")) {
+    plot <- plot + labs(x = NULL)
+  }
+
+  plot <- plot +
+    labs(title = NULL) +
+    theme(
+      plot.title = element_blank(),
+      plot.title.position = "panel",
+      axis.line = element_line(linewidth = 1.1, colour = "black"),
+      axis.ticks = element_line(linewidth = 0.95, colour = "black"),
+      axis.ticks.length = grid::unit(0.18, "cm"),
+      axis.title.x = element_text(size = 18, face = "bold", colour = "black"),
+      axis.title.y = element_text(size = 18, face = "bold", colour = "black"),
+      axis.text.x = element_text(size = 15.5, face = "bold", colour = "black"),
+      axis.text.y = element_text(size = 15.5, face = "bold", colour = "black"),
+      strip.background = element_rect(fill = "white", colour = "black", linewidth = 1.1),
+      strip.text = element_text(size = 16.5, face = "bold", colour = "black")
+    )
+
+  if (legend != "none") {
+    plot <- plot +
+      guides(
+        fill = guide_legend(ncol = 1, byrow = TRUE),
+        colour = guide_legend(ncol = 1, byrow = TRUE),
+        shape = guide_legend(ncol = 1, byrow = TRUE)
+      ) +
+      theme(
+        legend.title = element_text(size = 20, face = "bold"),
+        legend.text = element_text(size = 17, face = ifelse(legend == "italic", "italic", "plain")),
+        legend.key.width = grid::unit(0.88, "cm"),
+        legend.key.height = grid::unit(0.98, "cm"),
+        legend.spacing.y = grid::unit(0.22, "cm"),
+        legend.box = "vertical"
+      )
+  }
+
+  plot
+}
+
+make_panel_label_map <- function(labels) {
+  panel_labels <- paste0(LETTERS[seq_along(labels)], ". ", labels)
+  stats::setNames(panel_labels, labels)
+}
+
+build_two_group_brackets <- function(data, facet_col, value_col, label_col) {
+  data %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(facet_col))) %>%
+    dplyr::summarise(
+      bracket_y = max(.data[[value_col]], na.rm = TRUE) * 1.20 + 1e-06,
+      label = dplyr::first(.data[[label_col]]),
+      .groups = "drop"
+    ) %>%
+    dplyr::filter(!is.na(label), label != "") %>%
+    dplyr::mutate(
+      x_start = 1,
+      x_end = 2,
+      x_mid = 1.5,
+      tick_drop = pmax(bracket_y * 0.04, 1e-06),
+      label_y = bracket_y + pmax(bracket_y * 0.055, 1e-06)
+    )
+}
+
+add_two_group_brackets <- function(plot, bracket_df, text_size = 6) {
+  if (nrow(bracket_df) == 0) {
+    return(plot)
+  }
+
+  plot +
+    geom_segment(
+      data = bracket_df,
+      aes(x = x_start, xend = x_end, y = bracket_y, yend = bracket_y),
+      inherit.aes = FALSE,
+      linewidth = 0.9
+    ) +
+    geom_segment(
+      data = bracket_df,
+      aes(x = x_start, xend = x_start, y = bracket_y, yend = bracket_y - tick_drop),
+      inherit.aes = FALSE,
+      linewidth = 0.9
+    ) +
+    geom_segment(
+      data = bracket_df,
+      aes(x = x_end, xend = x_end, y = bracket_y, yend = bracket_y - tick_drop),
+      inherit.aes = FALSE,
+      linewidth = 0.9
+    ) +
+    geom_text(
+      data = bracket_df,
+      aes(x = x_mid, y = label_y, label = label),
+      inherit.aes = FALSE,
+      size = text_size,
+      fontface = "bold"
+    )
+}
+
+make_selected_genus_panel_plot <- function(boxplot_df, bracket_df, palette_values, panel_level) {
+  panel_level <- as.character(panel_level)[1]
+
+  panel_data <- boxplot_df %>%
+    dplyr::filter(DisplayGenusPanel == panel_level)
+
+  panel_brackets <- bracket_df %>%
+    dplyr::filter(DisplayGenusPanel == panel_level)
+
+  panel_label_data <- tibble::tibble(
+    x_mid = 1.5,
+    y_pos = Inf,
+    label = panel_level
+  )
+
+  panel_plot <- ggplot(
+    panel_data,
+    aes(x = Condition, y = RelativeAbundance, fill = DisplayGenus)
+  ) +
+    stat_boxplot(
+      geom = "errorbar",
+      width = 0.22,
+      linewidth = 1.0,
+      coef = 1.5
+    ) +
+    geom_boxplot(
+      outlier.shape = NA,
+      width = 0.62,
+      color = "black",
+      linewidth = 1.0,
+      coef = 1.5
+    ) +
+    geom_jitter(
+      shape = 21,
+      width = 0.07,
+      size = 3.9,
+      color = "black",
+      stroke = 0.62,
+      alpha = 0.82
+    ) +
+    scale_fill_manual(values = palette_values) +
+    scale_x_discrete(
+      limits = c("Control", "PS-NP"),
+      expand = expansion(add = c(0.52, 0.52))
+    ) +
+    scale_y_continuous(expand = expansion(mult = c(0.02, 0.30))) +
+    coord_cartesian(clip = "off") +
+    theme_classic(base_size = 16) +
+    labs(
+      title = NULL,
+      x = NULL,
+      y = "Relative Abundance"
+    ) +
+    theme(
+      axis.line = element_line(linewidth = 1.1, colour = "black"),
+      axis.ticks = element_line(linewidth = 0.95, colour = "black"),
+      axis.ticks.length = grid::unit(0.18, "cm"),
+      axis.title.x = element_blank(),
+      axis.title.y = element_text(size = 31.0, face = "bold", colour = "black", margin = margin(r = 10)),
+      axis.text.x = element_text(size = 30.0, face = "bold", colour = "black"),
+      axis.text.y = element_text(size = 28.0, face = "bold", colour = "black"),
+      legend.position = "none",
+      plot.margin = margin(t = 24, r = 18, b = 18, l = 12)
+    )
+
+  panel_plot <- add_two_group_brackets(panel_plot, panel_brackets, text_size = 7.8)
+
+  panel_plot +
+    geom_label(
+      data = panel_label_data,
+      aes(x = x_mid, y = y_pos, label = label),
+      inherit.aes = FALSE,
+      hjust = 0.5,
+      vjust = 1.10,
+      size = 8.8,
+      fontface = "bold",
+      label.size = 0.42,
+      label.padding = grid::unit(0.14, "lines"),
+      label.r = grid::unit(0.08, "lines"),
+      fill = "white",
+      colour = "black"
+    )
+}
+
+make_selected_genus_panel_grid <- function(boxplot_df, bracket_df, palette_values, panel_levels, ncol = 2) {
+  panel_levels <- as.character(panel_levels)
+
+  plot_list <- lapply(panel_levels, function(panel_level) {
+    make_selected_genus_panel_plot(boxplot_df, bracket_df, palette_values, panel_level)
+  })
+
+  while (length(plot_list) %% ncol != 0) {
+    plot_list <- c(plot_list, list(patchwork::plot_spacer()))
+  }
+
+  patchwork::wrap_plots(plot_list, ncol = ncol, byrow = TRUE)
+}
+
+
+deterministic_extra_colors <- function(labels, chroma = 55, luminance = 70) {
+  colors <- vapply(labels, function(lbl) {
+    ints <- utf8ToInt(enc2utf8(lbl))
+    hue <- sum(ints * seq_along(ints)) %% 360
+    grDevices::hcl(h = hue, c = chroma, l = luminance)
+  }, character(1))
+  stats::setNames(colors, labels)
+}
+
+extract_taxonomy_rank <- function(x, rank_letter) {
+  pattern <- paste0("(?:^|;)", rank_letter, "_{1,2}([^;]+)")
+  value <- stringr::str_match(x, pattern)[, 2]
+  value <- ifelse(is.na(value), "", value)
+  trimws(gsub("_", " ", value))
+}
+
+build_parent_rank_label <- function(family, order, class_name, phylum) {
+  invalid_or_generic <- function(v) {
+    v == "" | is.na(v) | grepl("^[a-zA-Z]__$", v) |
+      tolower(v) %in% c("unassigned", "unclassified", "unknown", "uncultured", "incertae sedis")
+  }
+
+  family_invalid <- invalid_or_generic(family)
+  order_invalid <- invalid_or_generic(order)
+  class_invalid <- invalid_or_generic(class_name)
+  phylum_invalid <- invalid_or_generic(phylum)
+
+  parent_taxon <- ifelse(
+    !family_invalid, family,
+    ifelse(
+      !order_invalid, order,
+      ifelse(!class_invalid, class_name, ifelse(!phylum_invalid, phylum, NA_character_))
+    )
+  )
+
+  parent_rank <- ifelse(
+    !family_invalid, "family",
+    ifelse(
+      !order_invalid, "order",
+      ifelse(!class_invalid, "class", ifelse(!phylum_invalid, "phylum", NA_character_))
+    )
+  )
+
+  ifelse(
+    !is.na(parent_taxon) & !is.na(parent_rank),
+    paste0(parent_rank, ": ", parent_taxon),
+    NA_character_
+  )
+}
+
+clean_taxon_label_composition <- function(x) {
+  genus <- extract_taxonomy_rank(x, "g")
+  family <- extract_taxonomy_rank(x, "f")
+  order <- extract_taxonomy_rank(x, "o")
+  class_name <- extract_taxonomy_rank(x, "c")
+  phylum <- extract_taxonomy_rank(x, "p")
+
+  genus_invalid <- genus == "" | is.na(genus) | grepl("^[a-z]__$", genus)
+  parent_label <- build_parent_rank_label(family, order, class_name, phylum)
+  genus_lower <- tolower(genus)
+  raw_lower <- tolower(x)
+
+  fallback_unresolved_label <- ifelse(
+    grepl("unassigned", raw_lower),
+    "Unassigned",
+    ifelse(
+      grepl("unclassified", raw_lower),
+      "Unclassified",
+      ifelse(
+        grepl("uncultured", raw_lower),
+        "Uncultured",
+        ifelse(grepl("incertae[_ ]sedis", raw_lower), "Incertae Sedis", "Unclassified")
+      )
+    )
+  )
+
+  ifelse(
+    !genus_invalid & !genus_lower %in% c("uncultured", "unassigned", "unclassified", "unknown", "incertae sedis"),
+    genus,
+    ifelse(
+      genus_lower == "uncultured",
+      ifelse(!is.na(parent_label), paste0("Uncultured (", parent_label, ")"), "Uncultured (taxonomy unavailable)"),
+      ifelse(
+        genus_lower %in% c("unassigned", "unclassified", "unknown", "incertae sedis"),
+        ifelse(
+          !is.na(parent_label),
+          paste0(tools::toTitleCase(genus), " (", parent_label, ")"),
+          paste0(tools::toTitleCase(genus), " (taxonomy unavailable)")
+        ),
+        ifelse(
+          !is.na(parent_label),
+          paste0("Unclassified (", parent_label, ")"),
+          paste0(fallback_unresolved_label, " (taxonomy unavailable)")
+        )
+      )
+    )
+  )
+}
+
+build_shared_genus_palette_composition <- function(genus_names) {
+  genus_palette <- c(
+    "Lactobacillus" = "#8ECFC9",
+    "Muribaculaceae" = "#F3C78D",
+    "Streptococcus" = "#A8B6D9",
+    "Turicibacter" = "#E8A0A6",
+    "Faecalibaculum" = "#A9CFA5",
+    "Odoribacter" = "#DCC7A1",
+    "Bifidobacterium" = "#C8B6D8",
+    "Rikenellaceae RC9 gut group" = "#E7B8D6",
+    "Alistipes" = "#90B4C6",
+    "Helicobacter" = "#D8A48F",
+    "Akkermansia" = "#B7A0D8",
+    "Bacteroides" = "#8FBE6D",
+    "Clostridia UCG-014" = "#B48A8A",
+    "Clostridium sensu stricto 1" = "#BFB6B0",
+    "Lachnospiraceae NK4A136 group" = "#5B84B1",
+    "Muribaculum" = "#9E9D68",
+    "Candidatus Saccharimonas" = "#6F8FB4",
+    "Desulfovibrio" = "#A77C95",
+    "Dubosiella" = "#8AA24A",
+    "Uncultured (Lachnospiraceae)" = "#9FB6C8",
+    "Uncultured (Ruminococcaceae)" = "#AFC1D8",
+    "Uncultured (Oscillospiraceae)" = "#8AAFD0",
+    "Incertae Sedis (Ruminococcaceae)" = "#5FAE8D",
+    "Uncultured (Bacillaceae)" = "#A6C0D8",
+    "Uncultured (Christensenellaceae)" = "#B5C6D9",
+    "Uncultured (Desulfovibrionaceae)" = "#9CAFC4",
+    "Uncultured (Erysipelotrichaceae)" = "#B7C0CC",
+    "Uncultured (Peptococcaceae)" = "#A9B4C7",
+    "Unclassified (Lachnospiraceae)" = "#D5B3C6",
+    "Unclassified (Clostridia)" = "#CFA4BF",
+    "Unclassified (Erysipelatoclostridiaceae)" = "#DAB7C5",
+    "Unclassified (taxonomy unavailable)" = "#A9C8E8",
+    "Unassigned (taxonomy unavailable)" = "#C892A6",
+    "Uncultured (taxonomy unavailable)" = "#C7CEDB",
+    "Uncultured" = "#C7CEDB",
+    "Unassigned" = "#C892A6",
+    "Unassigned (Lachnospiraceae)" = "#E0B180",
+    "Unclassified" = "#A9C8E8",
+    "Other" = "#A6A6A6"
+  )
+
+  missing_genera <- setdiff(genus_names, names(genus_palette))
+
+  if (length(missing_genera) > 0) {
+    extra_cols <- deterministic_extra_colors(missing_genera)
+    genus_palette <- c(genus_palette, extra_cols)
+  }
+
+  genus_palette
+}
+
+run_shapiro_by_condition <- function(data, value_col) {
+  bind_rows(
+    lapply(
+      split(data[[value_col]], data$group_simple),
+      function(values) {
+        if (length(values) >= 3 && length(values) <= 5000) {
+          test <- shapiro.test(values)
+          tibble(
+            n = length(values),
+            statistic = unname(test$statistic),
+            p_value = unname(test$p.value),
+            method = unname(test$method)
+          )
+        } else {
+          tibble(
+            n = length(values),
+            statistic = NA_real_,
+            p_value = NA_real_,
+            method = "Shapiro-Wilk not run; sample size outside 3-5000"
+          )
+        }
+      }
+    ),
+    .id = "group_simple"
+  ) %>%
+    mutate(metric = value_col) %>%
+    relocate(metric, .before = group_simple)
+}
+
+run_genus_pca <- function(genus_merged_df, metadata_cols, top_n = 50) {
+  genus_abundance_only <- genus_merged_df %>%
+    select(-all_of(metadata_cols)) %>%
+    mutate(across(everything(), as.numeric))
+
+  keep_genus <- vapply(
+    genus_abundance_only,
+    function(values) {
+      sum(!is.na(values)) > 1 && sd(values, na.rm = TRUE) > 0
+    },
+    logical(1)
+  )
+
+  genus_abundance_filtered <- genus_abundance_only[, keep_genus, drop = FALSE]
+
+  pca_obj <- prcomp(genus_abundance_filtered, center = TRUE, scale. = TRUE)
+
+  variance_explained <- (pca_obj$sdev^2) / sum(pca_obj$sdev^2)
+  variance_df <- tibble(
+    PC = paste0("PC", seq_along(variance_explained)),
+    variance_explained = variance_explained,
+    cumulative_variance = cumsum(variance_explained)
+  )
+
+  loading_pc_count <- min(5, ncol(pca_obj$rotation))
+  loading_weights <- variance_explained[seq_len(loading_pc_count)]
+  loadings_matrix <- pca_obj$rotation[, seq_len(loading_pc_count), drop = FALSE]
+  weighted_loading <- rowSums(abs(sweep(loadings_matrix, 2, loading_weights, `*`)))
+
+  loadings_df <- as.data.frame(loadings_matrix) %>%
+    rownames_to_column("Genus") %>%
+    mutate(weighted_loading = weighted_loading[Genus]) %>%
+    arrange(desc(weighted_loading))
+
+  top_genera_df <- loadings_df %>%
+    slice_head(n = min(top_n, nrow(loadings_df)))
+
+  filtered_table <- genus_merged_df %>%
+    select(all_of(metadata_cols), all_of(top_genera_df$Genus))
+
+  list(
+    variance_df = variance_df,
+    loadings_df = loadings_df,
+    top_genera_df = top_genera_df,
+    filtered_table = filtered_table
+  )
+}
+
+run_stratified_wilcoxon <- function(data, value_col) {
+  test_data <- data %>%
+    transmute(
+      value = as.numeric(.data[[value_col]]),
+      group_simple = factor(group_simple, levels = c("control", "psnp")),
+      accession_number = factor(accession_number, levels = c("PRJNA944557", "PRJNA1357312"))
+    ) %>%
+    filter(
+      !is.na(value),
+      !is.na(group_simple),
+      !is.na(accession_number)
+    )
+
+  test_result <- coin::wilcox_test(
+    value ~ group_simple | accession_number,
+    data = test_data,
+    distribution = "asymptotic"
+  )
+
+  tibble(
+    metric = value_col,
+    statistic = as.numeric(statistic(test_result, type = "standardized")),
+    p_value = as.numeric(coin::pvalue(test_result)),
+    method = "Stratified Wilcoxon rank-sum test by accession_number"
+  )
+}
+```
+
+# Step 2: Set File Paths
+
+```{r}
+file_path <- "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group 2/metadata_merged_group2_filtered_R_analysis.csv"
+sample_id_col <- "Run"
+condition_col <- "group_simple"
+batch_col <- "accession_number"
+size_col <- "psnp_size"
+output_dir <- "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 2 Outputs"
+top50_output_dir <- file.path(output_dir, "pca_top50")
+
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+if (!dir.exists(top50_output_dir)) {
+  dir.create(top50_output_dir, recursive = TRUE)
+}
+```
+
+# Step 3: Read Filtered Metadata
+
+```{r}
+metadata_file <- "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group 2/metadata_merged_group2_filtered_R_analysis.csv"
+metadata_df <- read.csv(metadata_file, check.names = FALSE)
+
+head(metadata_df[, c("Run", "group_simple", "psnp_size", "accession_number")])
+table(metadata_df$group_simple, useNA = "ifany")
+table(metadata_df$accession_number, useNA = "ifany")
+table(metadata_df$group_simple, metadata_df$accession_number, useNA = "ifany")
+```
+
+# Step 4: Keep Only Control and PS-NP Samples
+
+```{r}
+metadata_df <- metadata_df %>%
+  filter(group_simple %in% c("control", "psnp"))
+
+head(metadata_df[, c("Run", "group_simple", "psnp_size", "accession_number")])
+table(metadata_df$group_simple, useNA = "ifany")
+table(metadata_df$accession_number, useNA = "ifany")
+table(metadata_df$group_simple, metadata_df$accession_number, useNA = "ifany")
+```
+
+# Step 5: Read ASV Table
+
+```{r}
+asv_file <- "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group 2/exported-asv-table/asv-table.tsv"
+
+asv_df <- read.delim(
+  asv_file,
+  check.names = FALSE,
+  skip = 1
+)
+
+dim(asv_df)
+head(asv_df[, 1:6])
+colnames(asv_df)[1:6]
+```
+
+# Step 6: Transpose ASV Table
+
+```{r}
+asv_matrix <- asv_df
+rownames(asv_matrix) <- asv_matrix[, 1]
+asv_matrix <- asv_matrix[, -1]
+
+asv_matrix_t <- as.data.frame(t(asv_matrix))
+asv_matrix_t$Run <- rownames(asv_matrix_t)
+rownames(asv_matrix_t) <- NULL
+
+dim(asv_matrix_t)
+head(asv_matrix_t[, 1:6])
+```
+
+# Step 7: Merge Metadata and ASVs
+
+```{r}
+merged_df <- metadata_df %>%
+  inner_join(asv_matrix_t, by = "Run")
+
+dim(merged_df)
+head(merged_df[, c("Run", "group_simple", "psnp_size", "accession_number")])
+
+table(merged_df$group_simple, useNA = "ifany")
+table(merged_df$accession_number, useNA = "ifany")
+table(merged_df$group_simple, merged_df$accession_number, useNA = "ifany")
+```
+
+# Step 8: Keep Analysis Columns
+
+```{r}
+analysis_metadata <- merged_df %>%
+  select(Run, group_simple, psnp_size, accession_number)
+
+analysis_metadata$group_simple <- factor(analysis_metadata$group_simple, levels = c("control", "psnp"))
+analysis_metadata$accession_number <- factor(
+  analysis_metadata$accession_number,
+  levels = c("PRJNA944557", "PRJNA1357312")
+)
+
+abundance_df <- merged_df %>%
+  select(-all_of(colnames(metadata_df)))
+
+dim(analysis_metadata)
+dim(abundance_df)
+```
+
+# Step 9: Make Group Summary Table
+
+```{r}
+group_summary_df <- analysis_metadata %>%
+  dplyr::count(accession_number, group_simple, name = "n")
+
+group_summary_df
+table(analysis_metadata$group_simple, analysis_metadata$accession_number)
+```
+
+# Step 10: Clean and Normalize Data
+
+```{r}
+abundance_df <- abundance_df %>%
+  mutate(across(everything(), as.numeric))
+
+abundance_df[is.na(abundance_df)] <- 0
+
+min_value <- min(as.matrix(abundance_df)[as.matrix(abundance_df) > 0], na.rm = TRUE)
+pseudocount <- min_value / 5
+
+abundance_df <- abundance_df %>%
+  mutate(across(everything(), ~ ifelse(. == 0, pseudocount, .)))
+
+row_totals <- rowSums(abundance_df)
+norm_abundance_df <- abundance_df / row_totals
+
+summary(row_totals)
+range(rowSums(norm_abundance_df))
+pseudocount
+```
+
+# Step 11: Calculate Alpha Diversity
+
+```{r}
+shannon_index <- diversity(norm_abundance_df, index = "shannon")
+simpson_index <- diversity(norm_abundance_df, index = "simpson")
+
+alpha_df <- data.frame(
+  Run = analysis_metadata$Run,
+  Shannon = shannon_index,
+  Simpson = simpson_index
+)
+
+alpha_meta_df <- alpha_df %>%
+  left_join(analysis_metadata, by = "Run") %>%
+  mutate(
+    Condition = ifelse(group_simple == "psnp", "PS-NP", "Control"),
+    Condition = factor(Condition, levels = c("Control", "PS-NP"))
+  )
+
+head(alpha_meta_df)
+summary(alpha_meta_df$Shannon)
+summary(alpha_meta_df$Simpson)
+```
+
+# Step 12: Make Shannon Boxplot
+
+```{r shannon_plot_group2, fig.width=8.4, fig.height=6.8}
+alpha_meta_df$Condition <- factor(alpha_meta_df$Condition, levels = c("Control", "PS-NP"))
+shannon_p_value <- wilcox.test(Shannon ~ group_simple, data = alpha_meta_df, exact = FALSE)$p.value
+shannon_significance_label <- ifelse(shannon_p_value < 0.05, "*", "")
+shannon_annotation_y <- max(alpha_meta_df$Shannon, na.rm = TRUE) * 1.08
+
+shannon_plot <- ggplot(alpha_meta_df, aes(x = Condition, y = Shannon, fill = Condition)) +
+  stat_boxplot(
+    geom = "errorbar",
+    width = 0.18,
+    linewidth = 0.8,
+    coef = 1.5
+  ) +
+  geom_boxplot(
+    outlier.shape = NA,
+    width = 0.5,
+    color = "black",
+    linewidth = 0.8,
+    coef = 1.5
+  ) +
+  geom_jitter(
+    shape = 21,
+    width = 0.08,
+    size = 3.0,
+    color = "black",
+    stroke = 0.5,
+    alpha = 0.8
+  ) +
+  scale_fill_manual(values = c("Control" = "#B7D9F2", "PS-NP" = "#F2B6A7")) +
+  scale_y_continuous(expand = expansion(mult = c(0.02, 0.14))) +
+  annotate("text", x = 1.5, y = shannon_annotation_y, label = shannon_significance_label, size = 7, fontface = "bold") +
+  theme_classic(base_size = 15, base_family = "Helvetica") +
+  labs(
+    title = wrap_figure_title("Shannon Alpha Diversity in Control and PS-NP Samples for Group 2"),
+    x = "Condition",
+    y = "Shannon Index"
+  ) +
+  theme(
+    plot.title = element_text(size = 17, hjust = 0.5, face = "plain", lineheight = 1.05, margin = margin(b = 10)),
+    axis.title = element_text(size = 15),
+    axis.text = element_text(size = 13, color = "black"),
+    legend.position = "none"
+  )
+
+shannon_plot <- finalize_thesis_plot(shannon_plot, legend = "none")
+
+shannon_plot
+```
+
+# Step 13: Make Simpson Boxplot
+
+```{r simpson_plot_group2, fig.width=8.4, fig.height=6.8}
+simpson_p_value <- wilcox.test(Simpson ~ group_simple, data = alpha_meta_df, exact = FALSE)$p.value
+simpson_significance_label <- ifelse(simpson_p_value < 0.05, "*", "")
+simpson_annotation_y <- max(alpha_meta_df$Simpson, na.rm = TRUE) * 1.08
+
+simpson_plot <- ggplot(alpha_meta_df, aes(x = Condition, y = Simpson, fill = Condition)) +
+  stat_boxplot(
+    geom = "errorbar",
+    width = 0.18,
+    linewidth = 0.8,
+    coef = 1.5
+  ) +
+  geom_boxplot(
+    outlier.shape = NA,
+    width = 0.5,
+    color = "black",
+    linewidth = 0.8,
+    coef = 1.5
+  ) +
+  geom_jitter(
+    shape = 21,
+    width = 0.08,
+    size = 3.0,
+    color = "black",
+    stroke = 0.5,
+    alpha = 0.8
+  ) +
+  scale_fill_manual(values = c("Control" = "#B7D9F2", "PS-NP" = "#F2B6A7")) +
+  scale_y_continuous(expand = expansion(mult = c(0.02, 0.14))) +
+  annotate("text", x = 1.5, y = simpson_annotation_y, label = simpson_significance_label, size = 7, fontface = "bold") +
+  theme_classic(base_size = 15, base_family = "Helvetica") +
+  labs(
+    title = wrap_figure_title("Simpson Alpha Diversity in Control and PS-NP Samples for Group 2"),
+    x = "Condition",
+    y = "Simpson Index"
+  ) +
+  theme(
+    plot.title = element_text(size = 17, hjust = 0.5, face = "plain", lineheight = 1.05, margin = margin(b = 10)),
+    axis.title = element_text(size = 15),
+    axis.text = element_text(size = 13, color = "black"),
+    legend.position = "none"
+  )
+
+simpson_plot <- finalize_thesis_plot(simpson_plot, legend = "none")
+
+simpson_plot
+```
+
+# Step 14: Run Alpha Diversity Normality Checks
+
+```{r}
+shapiro_shannon <- run_shapiro_by_condition(alpha_meta_df, "Shannon")
+shapiro_simpson <- run_shapiro_by_condition(alpha_meta_df, "Simpson")
+
+mann_whitney_shannon <- wilcox.test(Shannon ~ group_simple, data = alpha_meta_df, exact = FALSE)
+mann_whitney_simpson <- wilcox.test(Simpson ~ group_simple, data = alpha_meta_df, exact = FALSE)
+
+stratified_wilcoxon_shannon <- run_stratified_wilcoxon(alpha_meta_df, "Shannon")
+stratified_wilcoxon_simpson <- run_stratified_wilcoxon(alpha_meta_df, "Simpson")
+
+shapiro_shannon
+shapiro_simpson
+mann_whitney_shannon
+mann_whitney_simpson
+stratified_wilcoxon_shannon
+stratified_wilcoxon_simpson
+```
+
+# Step 15: Read Genus Relative Abundance Table
+
+```{r}
+genus_file <- "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group 2/exported-genus-relfreq/genus-relfreq.tsv"
+
+genus_df <- read.delim(genus_file, check.names = FALSE, skip = 1)
+
+dim(genus_df)
+head(genus_df[, 1:6])
+colnames(genus_df)[1:6]
+```
+
+# Step 16: Transpose Genus Table and Merge with Metadata
+
+```{r}
+genus_matrix <- genus_df
+rownames(genus_matrix) <- genus_matrix[, 1]
+genus_matrix <- genus_matrix[, -1]
+
+genus_matrix_t <- as.data.frame(t(genus_matrix))
+genus_matrix_t$Run <- rownames(genus_matrix_t)
+rownames(genus_matrix_t) <- NULL
+
+genus_merged_df <- analysis_metadata %>%
+  inner_join(genus_matrix_t, by = "Run")
+
+dim(genus_merged_df)
+```
+
+# Step 17: Run PCA on the Genus Table and Select the Top 50 Genera
+
+```{r}
+group2_pca <- run_genus_pca(
+  genus_merged_df = genus_merged_df,
+  metadata_cols = c("Run", "group_simple", "psnp_size", "accession_number"),
+  top_n = 50
+)
+
+pca_variance_df <- group2_pca$variance_df
+pca_genus_loadings_df <- group2_pca$loadings_df
+pca_top50_genera_df <- group2_pca$top_genera_df
+genus_filtered_top50_df <- group2_pca$filtered_table
+
+head(pca_variance_df, 10)
+head(pca_top50_genera_df, 20)
+```
+
+# Step 18: Save Current Shapiro and PCA Filtering Outputs
+
+```{r}
+write.csv(metadata_df, file.path(output_dir, "group2_metadata.csv"), row.names = FALSE)
+write.csv(analysis_metadata, file.path(output_dir, "group2_analysis_metadata.csv"), row.names = FALSE)
+write.csv(group_summary_df, file.path(output_dir, "group2_group_summary.csv"), row.names = FALSE)
+write.csv(abundance_df, file.path(output_dir, "group2_abundance_cleaned.csv"), row.names = FALSE)
+write.csv(as.data.frame(norm_abundance_df), file.path(output_dir, "group2_abundance_normalized.csv"), row.names = TRUE)
+write.csv(alpha_df, file.path(output_dir, "group2_alpha_diversity.csv"), row.names = FALSE)
+write.csv(alpha_meta_df, file.path(output_dir, "group2_alpha_diversity_with_metadata.csv"), row.names = FALSE)
+write.csv(shapiro_shannon, file.path(output_dir, "group2_shapiro_shannon_by_condition.csv"), row.names = FALSE)
+write.csv(shapiro_simpson, file.path(output_dir, "group2_shapiro_simpson_by_condition.csv"), row.names = FALSE)
+write.csv(pca_variance_df, file.path(top50_output_dir, "group2_pca_variance_explained.csv"), row.names = FALSE)
+write.csv(pca_genus_loadings_df, file.path(top50_output_dir, "group2_pca_genus_loadings.csv"), row.names = FALSE)
+write.csv(pca_top50_genera_df, file.path(top50_output_dir, "group2_pca_top50_genera.csv"), row.names = FALSE)
+write.csv(genus_filtered_top50_df, file.path(top50_output_dir, "group2_genus_filtered_top50_for_downstream.csv"), row.names = FALSE)
+
+ggsave(file.path(output_dir, "group2_shannon_boxplot.png"), plot = shannon_plot, width = 6.5, height = 5.5, dpi = 600)
+ggsave(file.path(output_dir, "group2_simpson_boxplot.png"), plot = simpson_plot, width = 6.5, height = 5.5, dpi = 600)
+```
+
+# Step 19: Calculate Bray-Curtis Distances
+
+```{r}
+rownames(norm_abundance_df) <- analysis_metadata$Run
+
+bray_dist <- vegdist(norm_abundance_df, method = "bray")
+
+as.matrix(bray_dist)[1:5, 1:5]
+```
+
+# Step 20: Run PCoA
+
+```{r}
+pcoa_obj <- cmdscale(bray_dist, k = 2, eig = TRUE, add = TRUE)
+
+pcoa_df <- as.data.frame(pcoa_obj$points)
+colnames(pcoa_df) <- c("PCoA1", "PCoA2")
+pcoa_df$Run <- rownames(pcoa_obj$points)
+
+pcoa_plot_df <- pcoa_df %>%
+  left_join(analysis_metadata, by = "Run") %>%
+  mutate(
+    Condition = ifelse(group_simple == "psnp", "PS-NP", "Control"),
+    Condition = factor(Condition, levels = c("Control", "PS-NP"))
+  )
+
+eig <- pcoa_obj$eig
+positive_eig <- eig[eig > 0]
+
+pcoa1_percent <- round(100 * positive_eig[1] / sum(positive_eig), 1)
+pcoa2_percent <- round(100 * positive_eig[2] / sum(positive_eig), 1)
+
+head(pcoa_plot_df)
+pcoa1_percent
+pcoa2_percent
+```
+
+# Step 21: Make Batch-Aware PCoA Plot
+
+```{r pcoa_plot_group2, fig.width=8.5, fig.height=6.5}
+shape_values <- c(
+  "PRJNA944557" = 24,
+  "PRJNA1357312" = 22
+)
+
+pcoa_plot <- ggplot(pcoa_plot_df, aes(x = PCoA1, y = PCoA2)) +
+  geom_point(
+    aes(fill = Condition, shape = accession_number),
+    size = 4.8,
+    color = "black",
+    stroke = 0.9,
+    alpha = 0.95,
+    position = position_jitter(width = 0.009, height = 0.009)
+  ) +
+  scale_fill_manual(
+    values = c("Control" = "#B7D9F2", "PS-NP" = "#F2B6A7"),
+    name = "Condition"
+  ) +
+  scale_shape_manual(
+    values = shape_values,
+    name = "Study"
+  ) +
+  guides(
+    fill = guide_legend(
+      order = 2,
+      override.aes = list(
+        shape = 21,
+        size = 6.4,
+        color = "black",
+        stroke = 0.9,
+        fill = c("#B7D9F2", "#F2B6A7")
+      )
+    ),
+    shape = guide_legend(
+      order = 1,
+      override.aes = list(fill = "white", size = 6.8, color = "black", stroke = 0.9)
+    )
+  ) +
+  theme_classic(base_size = 18) +
+  labs(
+    title = "Bray-Curtis PCoA of Group 2 Samples by Condition and Study Accession",
+    x = paste0("PCoA1 (", pcoa1_percent, "%)"),
+    y = paste0("PCoA2 (", pcoa2_percent, "%)")
+  ) +
+  theme(
+    plot.title = element_text(size = 20, face = "plain", hjust = 0.5, lineheight = 1.05, margin = margin(b = 10)),
+    legend.position = "right",
+    plot.title.position = "plot"
+  )
+
+pcoa_plot <- finalize_thesis_plot(pcoa_plot, legend = "plain") +
+  theme(
+    axis.line = element_line(linewidth = 1.3, colour = "black"),
+    axis.ticks = element_line(linewidth = 1.1, colour = "black"),
+    axis.ticks.length = grid::unit(0.22, "cm"),
+    axis.title = element_text(size = 34.0, face = "bold", colour = "black"),
+    axis.text = element_text(size = 23.0, face = "bold", colour = "black"),
+    legend.title = element_text(size = 20.5, face = "bold"),
+    legend.text = element_text(size = 18.6),
+    legend.key.width = grid::unit(1.0, "cm"),
+    legend.key.height = grid::unit(1.1, "cm"),
+    legend.spacing.y = grid::unit(0.24, "cm"),
+    legend.box = "vertical"
+  )
+
+pcoa_plot
+```
+
+# Step 22: Run PERMANOVA Models
+
+```{r}
+set.seed(30)
+permanova_condition_only <- adonis2(
+  bray_dist ~ group_simple,
+  data = analysis_metadata,
+  permutations = 999
+)
+
+set.seed(1)
+permanova_batch_only <- adonis2(
+  bray_dist ~ accession_number,
+  data = analysis_metadata,
+  permutations = 999
+)
+
+set.seed(3)
+permanova_group2_adjusted <- adonis2(
+  bray_dist ~ accession_number + group_simple,
+  data = analysis_metadata,
+  permutations = 999,
+  by = "margin"
+)
+
+permanova_condition_only
+permanova_batch_only
+permanova_group2_adjusted
+```
+
+# Step 23: Read Genus Relative Abundance Table
+
+```{r}
+genus_file <- "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group 2/exported-genus-relfreq/genus-relfreq.tsv"
+
+genus_df <- read.delim(genus_file, check.names = FALSE, skip = 1)
+
+dim(genus_df)
+head(genus_df[, 1:6])
+colnames(genus_df)[1:6]
+```
+
+# Step 24: Transpose Genus Table and Merge with Metadata
+
+```{r}
+genus_matrix <- genus_df
+rownames(genus_matrix) <- genus_matrix[, 1]
+genus_matrix <- genus_matrix[, -1]
+
+genus_matrix_t <- as.data.frame(t(genus_matrix))
+genus_matrix_t$Run <- rownames(genus_matrix_t)
+rownames(genus_matrix_t) <- NULL
+
+genus_merged_df <- analysis_metadata %>%
+  inner_join(genus_matrix_t, by = "Run")
+
+dim(genus_merged_df)
+```
+
+# Step 25: Run Unadjusted and Stratified Genus Tests
+
+```{r}
+genus_abundance_only <- genus_filtered_top50_df %>%
+  select(-Run, -group_simple, -psnp_size, -accession_number)
+
+genus_results_unadjusted <- data.frame(
+  Genus = character(),
+  p_value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+genus_results_stratified <- data.frame(
+  Genus = character(),
+  p_value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (genus_name in colnames(genus_abundance_only)) {
+  abundance_values <- as.numeric(genus_abundance_only[[genus_name]])
+
+  test_df_unadjusted <- data.frame(
+    group_simple = genus_merged_df$group_simple,
+    abundance = abundance_values
+  )
+
+  mw <- wilcox.test(abundance ~ group_simple, data = test_df_unadjusted, exact = FALSE)
+
+  genus_results_unadjusted <- rbind(
+    genus_results_unadjusted,
+    data.frame(
+      Genus = genus_name,
+      p_value = mw$p.value
+    )
+  )
+
+  test_df_stratified <- data.frame(
+    accession_number = factor(genus_merged_df$accession_number, levels = c("PRJNA944557", "PRJNA1357312")),
+    group_simple = factor(genus_merged_df$group_simple, levels = c("control", "psnp")),
+    abundance = abundance_values
+  )
+
+  stratified_test <- coin::wilcox_test(
+    abundance ~ group_simple | accession_number,
+    data = test_df_stratified,
+    distribution = "asymptotic"
+  )
+
+  genus_results_stratified <- rbind(
+    genus_results_stratified,
+    data.frame(
+      Genus = genus_name,
+      p_value = as.numeric(coin::pvalue(stratified_test))
+    )
+  )
+}
+
+dim(genus_results_unadjusted)
+dim(genus_results_stratified)
+head(genus_results_unadjusted)
+head(genus_results_stratified)
+```
+
+# Step 26: Apply BH/FDR Correction
+
+```{r}
+genus_results_unadjusted$q_value <- p.adjust(genus_results_unadjusted$p_value, method = "BH")
+genus_results_stratified$q_value <- p.adjust(genus_results_stratified$p_value, method = "BH")
+
+genus_results_unadjusted_raw <- genus_results_unadjusted %>% select(Genus, p_value)
+genus_results_stratified_raw <- genus_results_stratified %>% select(Genus, p_value)
+
+genus_results_unadjusted <- genus_results_unadjusted %>%
+  arrange(p_value)
+
+genus_results_stratified <- genus_results_stratified %>%
+  arrange(p_value)
+
+head(genus_results_unadjusted, 20)
+head(genus_results_stratified, 20)
+
+sum(genus_results_unadjusted$q_value < 0.05, na.rm = TRUE)
+sum(genus_results_stratified$q_value < 0.05, na.rm = TRUE)
+```
+
+# Step 27: Load LEfSe Packages
+
+```{r}
+Sys.setenv(
+  PATH = paste("/opt/homebrew/bin", Sys.getenv("PATH"), sep = ":"),
+  FC = "/opt/homebrew/bin/gfortran",
+  F77 = "/opt/homebrew/bin/gfortran",
+  F90 = "/opt/homebrew/bin/gfortran"
+)
+
+if (!requireNamespace("lefser", quietly = TRUE)) {
+  if (!requireNamespace("BiocManager", quietly = TRUE)) {
+    install.packages("BiocManager")
+  }
+  BiocManager::install("lefser", ask = FALSE, update = FALSE)
+}
+
+if (!requireNamespace("SummarizedExperiment", quietly = TRUE)) {
+  if (!requireNamespace("BiocManager", quietly = TRUE)) {
+    install.packages("BiocManager")
+  }
+  BiocManager::install("SummarizedExperiment", ask = FALSE, update = FALSE)
+}
+
+library(lefser)
+library(SummarizedExperiment)
+library(dplyr)
+```
+
+# Step 28: Prepare Genus-Level LEfSe Input
+
+```{r}
+lefse_meta <- genus_filtered_top50_df %>%
+  select(Run, group_simple, accession_number) %>%
+  mutate(
+    group_simple = factor(trimws(tolower(group_simple)), levels = c("control", "psnp")),
+    accession_number = factor(accession_number, levels = c("PRJNA944557", "PRJNA1357312"))
+  ) %>%
+  filter(group_simple %in% c("control", "psnp"))
+
+lefse_genus <- genus_filtered_top50_df %>%
+  filter(Run %in% lefse_meta$Run) %>%
+  mutate(run_order = match(Run, lefse_meta$Run)) %>%
+  arrange(run_order) %>%
+  select(-run_order, -Run, -group_simple, -psnp_size, -accession_number)
+
+lefse_matrix <- t(as.matrix(lefse_genus))
+mode(lefse_matrix) <- "numeric"
+
+lefse_input <- SummarizedExperiment(
+  assays = list(relative_abundance = lefse_matrix),
+  colData = S4Vectors::DataFrame(lefse_meta)
+)
+
+dim(lefse_matrix)
+table(lefse_meta$group_simple, lefse_meta$accession_number)
+```
+
+# Step 29: Run LEfSe
+
+```{r}
+group2_lefse <- lefser(
+  lefse_input,
+  classCol = "group_simple",
+  subclassCol = "accession_number",
+  assay = "relative_abundance",
+  lda.threshold = 2,
+  method = "none",
+  trim.names = FALSE
+)
+
+group2_lefse <- as.data.frame(group2_lefse)
+
+if (nrow(group2_lefse) > 0) {
+  colnames(group2_lefse) <- c("Genus", "LDA_score")
+  group2_lefse <- group2_lefse %>%
+    arrange(desc(LDA_score))
+} else {
+  group2_lefse <- data.frame(
+    Genus = character(),
+    LDA_score = numeric()
+  )
+}
+
+group2_lefse
+```
+
+No significant LEfSe biomarkers were detected for Group 2 under the subclass-aware exploratory setup, so no LDA scores were generated.
+
+# Step 30: Compare LEfSe with the Current Stratified Genus-Level Results
+
+```{r}
+group2_lefse_compare <- genus_results_stratified %>%
+  mutate(
+    Genus = as.character(Genus),
+    Found_by_LEfSe = Genus %in% group2_lefse$Genus,
+    LEfSe_LDA_score = group2_lefse$LDA_score[match(Genus, group2_lefse$Genus)],
+    FDR_significant = q_value < 0.05
+  ) %>%
+  arrange(p_value)
+
+head(group2_lefse_compare, 20)
+sum(group2_lefse_compare$Found_by_LEfSe, na.rm = TRUE)
+```
+
+# Step 31: Save LEfSe Outputs
+
+```{r}
+lefse_output_dir <- file.path(top50_output_dir, "lefse_group2_outputs")
+
+if (!dir.exists(lefse_output_dir)) {
+  dir.create(lefse_output_dir, recursive = TRUE)
+}
+
+write.csv(
+  group2_lefse,
+  file.path(lefse_output_dir, "group2_lefse_results_LDA2.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  group2_lefse_compare,
+  file.path(lefse_output_dir, "group2_lefse_vs_stratified_wilcoxon_results_comparison_LDA2.csv"),
+  row.names = FALSE
+)
+
+list.files(lefse_output_dir)
+```
+
+# Step 32: Recheck Group 2 Top 50 Genus Test Tables Before Saving
+
+```{r}
+expected_top50_genus_n <- ncol(genus_filtered_top50_df) - 4
+
+if (nrow(genus_results_unadjusted) != expected_top50_genus_n ||
+    nrow(genus_results_stratified) != expected_top50_genus_n) {
+
+  genus_abundance_only <- genus_filtered_top50_df %>%
+    select(-Run, -group_simple, -psnp_size, -accession_number)
+
+  genus_results_unadjusted <- data.frame(
+    Genus = character(),
+    p_value = numeric(),
+    stringsAsFactors = FALSE
+  )
+
+  genus_results_stratified <- data.frame(
+    Genus = character(),
+    p_value = numeric(),
+    stringsAsFactors = FALSE
+  )
+
+  for (genus_name in colnames(genus_abundance_only)) {
+    abundance_values <- as.numeric(genus_abundance_only[[genus_name]])
+
+    test_df_unadjusted <- data.frame(
+      group_simple = genus_filtered_top50_df$group_simple,
+      abundance = abundance_values
+    )
+
+    mw <- wilcox.test(abundance ~ group_simple, data = test_df_unadjusted, exact = FALSE)
+
+    genus_results_unadjusted <- rbind(
+      genus_results_unadjusted,
+      data.frame(
+        Genus = genus_name,
+        p_value = mw$p.value
+      )
+    )
+
+    test_df_stratified <- data.frame(
+      accession_number = factor(genus_filtered_top50_df$accession_number, levels = c("PRJNA944557", "PRJNA1357312")),
+      group_simple = factor(genus_filtered_top50_df$group_simple, levels = c("control", "psnp")),
+      abundance = abundance_values
+    )
+
+    stratified_test <- coin::wilcox_test(
+      abundance ~ group_simple | accession_number,
+      data = test_df_stratified,
+      distribution = "asymptotic"
+    )
+
+    genus_results_stratified <- rbind(
+      genus_results_stratified,
+      data.frame(
+        Genus = genus_name,
+        p_value = as.numeric(coin::pvalue(stratified_test))
+      )
+    )
+  }
+
+  genus_results_unadjusted$q_value <- p.adjust(genus_results_unadjusted$p_value, method = "BH")
+  genus_results_stratified$q_value <- p.adjust(genus_results_stratified$p_value, method = "BH")
+
+  genus_results_unadjusted <- genus_results_unadjusted %>%
+    arrange(p_value)
+
+  genus_results_stratified <- genus_results_stratified %>%
+    arrange(p_value)
+
+  genus_results_unadjusted_raw <- genus_results_unadjusted %>% select(Genus, p_value)
+  genus_results_stratified_raw <- genus_results_stratified %>% select(Genus, p_value)
+}
+
+dim(genus_results_unadjusted)
+dim(genus_results_stratified)
+```
+
+# Step 33: Build Taxa Plotting Data
+
+```{r}
+genus_plot_df <- genus_merged_df %>%
+  select(-psnp_size) %>%
+  pivot_longer(
+    cols = -c(Run, group_simple, accession_number),
+    names_to = "Taxonomy",
+    values_to = "RelativeAbundance"
+  ) %>%
+  mutate(
+    RelativeAbundance = as.numeric(RelativeAbundance),
+    accession_number = factor(accession_number, levels = c("PRJNA944557", "PRJNA1357312")),
+    Condition = ifelse(group_simple == "psnp", "PS-NP", "Control"),
+    Condition = factor(Condition, levels = c("Control", "PS-NP")),
+    Genus = clean_taxon_label_composition(Taxonomy)
+  )
+
+head(genus_plot_df)
+```
+
+# Step 34: Make Top 10 Taxa Barplot
+
+```{r top10_taxa_plot_group2, fig.width=11.5, fig.height=8.8}
+top10_genera <- genus_plot_df %>%
+  group_by(Genus) %>%
+  summarise(TotalAbundance = sum(RelativeAbundance, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(TotalAbundance)) %>%
+  dplyr::slice(1:10) %>%
+  pull(Genus)
+
+genus_plot_top10 <- genus_plot_df %>%
+  filter(Genus %in% top10_genera) %>%
+  group_by(Condition, Genus) %>%
+  summarise(
+    MeanRelativeAbundance = mean(RelativeAbundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+genus_order <- genus_plot_top10 %>%
+  group_by(Genus) %>%
+  summarise(TotalAbundance = sum(MeanRelativeAbundance), .groups = "drop") %>%
+  arrange(desc(TotalAbundance)) %>%
+  pull(Genus)
+
+stack_order <- genus_order
+legend_order <- rev(stack_order)
+
+genus_plot_top10$Genus <- factor(genus_plot_top10$Genus, levels = stack_order)
+
+genus_palette <- build_shared_genus_palette_composition(stack_order)
+
+top10_taxa_plot <- ggplot(genus_plot_top10, aes(x = Condition, y = MeanRelativeAbundance, fill = Genus)) +
+  geom_col(
+    position = position_fill(reverse = TRUE),
+    width = 0.55,
+    color = "white",
+    linewidth = 0.08
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1),
+    limits = c(0, 1),
+    expand = c(0, 0)
+  ) +
+  scale_fill_manual(
+    values = genus_palette,
+    breaks = legend_order
+  ) +
+  labs(
+    title = wrap_figure_title("Ten Most Abundant Genera by Mean Relative Abundance in Control and PS-NP Samples for Group 2"),
+    x = NULL,
+    y = "Mean Relative Abundance (%)",
+    fill = "Genus"
+  ) +
+  theme_classic(base_size = 15) +
+  theme(
+    plot.title = element_text(size = 17, hjust = 0.5, face = "plain", lineheight = 1.05, margin = margin(b = 10)),
+    axis.title.y = element_text(size = 15),
+    axis.text.x = element_text(size = 14, color = "black"),
+    axis.text.y = element_text(size = 13, color = "black"),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 9.5, face = "italic"),
+    legend.position = "right",
+    legend.key.height = unit(0.34, "cm"),
+    legend.spacing.y = unit(0.08, "cm")
+  )
+
+top10_taxa_plot <- finalize_thesis_plot(top10_taxa_plot, legend = "italic")
+
+top10_taxa_plot
+```
+
+# Step 35: Make All-Genera Supplementary Taxa Barplot
+
+```{r all_genera_plot_group2, fig.width=12, fig.height=8}
+clean_taxon_label <- function(x) clean_taxon_label_composition(x)
+
+genus_plot_all <- genus_plot_df %>%
+  mutate(
+    Genus = clean_taxon_label(Taxonomy)
+  ) %>%
+  group_by(Condition, Genus) %>%
+  summarise(
+    MeanRelativeAbundance = mean(RelativeAbundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+genus_order_all <- genus_plot_all %>%
+  group_by(Genus) %>%
+  summarise(TotalAbundance = sum(MeanRelativeAbundance), .groups = "drop") %>%
+  arrange(desc(TotalAbundance)) %>%
+  pull(Genus)
+
+stack_order_all <- genus_order_all
+legend_order_all <- rev(stack_order_all)
+
+genus_plot_all$Genus <- factor(genus_plot_all$Genus, levels = stack_order_all)
+
+composition_palette <- build_shared_genus_palette_composition(stack_order_all)
+
+all_genera_plot <- ggplot(genus_plot_all, aes(x = Condition, y = MeanRelativeAbundance, fill = Genus)) +
+  geom_col(
+    position = position_fill(reverse = TRUE),
+    width = 0.55,
+    color = "white",
+    linewidth = 0.05
+  ) +
+  scale_y_continuous(
+    labels = percent_format(accuracy = 1),
+    limits = c(0, 1),
+    expand = c(0, 0)
+  ) +
+  scale_fill_manual(
+    values = composition_palette,
+    breaks = legend_order_all
+  ) +
+  labs(
+    title = wrap_figure_title("Mean Relative Abundance of All Detected Genera in Control and PS-NP Samples for Group 2"),
+    x = NULL,
+    y = "Mean Relative Abundance (%)",
+    fill = "Genus"
+  ) +
+  theme_classic(base_size = 15) +
+  theme(
+    plot.title = element_text(size = 17, hjust = 0.5, face = "plain", lineheight = 1.05, margin = margin(b = 10)),
+    axis.title.y = element_text(size = 15),
+    axis.text.x = element_text(size = 14, color = "black"),
+    axis.text.y = element_text(size = 13, color = "black"),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 8.5, face = "italic"),
+    legend.position = "right",
+    legend.key.height = unit(0.24, "cm"),
+    legend.spacing.y = unit(0.05, "cm")
+  ) +
+  guides(fill = guide_legend(ncol = 2))
+
+all_genera_plot <- finalize_thesis_plot(all_genera_plot, legend = "italic") +
+  theme(
+    legend.title = element_text(size = 13.5, face = "bold"),
+    legend.text = element_text(size = 9.5, face = "italic"),
+    legend.key.height = unit(0.20, "cm"),
+    legend.key.width = unit(0.24, "cm"),
+    legend.spacing.y = unit(0.02, "cm"),
+    legend.box.spacing = unit(0.08, "cm")
+  ) +
+  guides(fill = guide_legend(ncol = 2, byrow = TRUE))
+
+all_genera_plot
+```
+
+# Step 36: Make Per-Sample Taxa Barplot
+
+```{r per_sample_taxa_plot_group2, fig.width=15.5, fig.height=9.2}
+sample_order_df <- genus_plot_df %>%
+  distinct(accession_number, Condition, Run) %>%
+  mutate(
+    accession_number = factor(accession_number, levels = c("PRJNA944557", "PRJNA1357312")),
+    Condition = factor(Condition, levels = c("Control", "PS-NP"))
+  ) %>%
+  arrange(accession_number, Condition, Run)
+
+genus_plot_sample <- genus_plot_df %>%
+  filter(Genus %in% top10_genera) %>%
+  group_by(Run, accession_number, Condition, Genus) %>%
+  summarise(
+    RelativeAbundance = sum(RelativeAbundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+genus_plot_sample$Run <- factor(genus_plot_sample$Run, levels = sample_order_df$Run)
+genus_plot_sample$Genus <- factor(genus_plot_sample$Genus, levels = stack_order)
+
+per_sample_taxa_plot <- ggplot(genus_plot_sample, aes(x = Run, y = RelativeAbundance, fill = Genus)) +
+  geom_col(
+    position = position_fill(reverse = TRUE),
+    width = 0.9,
+    color = "white",
+    linewidth = 0.05
+  ) +
+  ggh4x::facet_nested(
+    ~ accession_number + Condition,
+    scales = "free_x",
+    space = "free_x"
+  ) +
+  scale_y_continuous(
+    labels = percent_format(accuracy = 1),
+    limits = c(0, 1),
+    expand = c(0, 0)
+  ) +
+  scale_fill_manual(
+    values = genus_palette,
+    breaks = legend_order
+  ) +
+  labs(
+    title = wrap_figure_title("Relative Abundance of the Ten Most Abundant Genera Across Individual Samples in Group 2, Grouped by Study and Condition"),
+    x = NULL,
+    y = "Relative Abundance (%)",
+    fill = "Genus"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    plot.title = element_text(size = 16, hjust = 0.5, face = "plain", lineheight = 1.05, margin = margin(b = 10)),
+    axis.title = element_text(size = 15),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 8, color = "black"),
+    axis.text.y = element_text(size = 12, color = "black"),
+    strip.background = element_blank(),
+    strip.text = element_text(size = 12, face = "plain"),
+    ggh4x.facet.nestline = element_blank(),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 9, face = "italic"),
+    legend.position = "right",
+    legend.key.height = unit(0.28, "cm"),
+    legend.spacing.y = unit(0.06, "cm")
+  )
+
+per_sample_taxa_plot <- finalize_thesis_plot(per_sample_taxa_plot, legend = "italic") +
+  theme(
+    axis.title.y = element_text(size = 17, face = "bold", colour = "black"),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 9, face = "bold", colour = "black"),
+    axis.text.y = element_text(size = 13.5, face = "bold", colour = "black"),
+    strip.background = element_blank(),
+    strip.text = element_text(size = 13.5, face = "bold", colour = "black"),
+    ggh4x.facet.nestline = element_blank()
+  )
+
+per_sample_taxa_plot
+```
+
+# Step 37: Run Per-Study Exploratory Checks for Group 2 Later
+
+```{r eval=FALSE}
+study_ids <- c("PRJNA944557", "PRJNA1357312")
+
+sanity_alpha_results <- data.frame(
+  accession_number = character(),
+  metric = character(),
+  p_value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+sanity_permanova_results <- data.frame(
+  accession_number = character(),
+  Df = numeric(),
+  SumOfSqs = numeric(),
+  R2 = numeric(),
+  F = numeric(),
+  Pr = numeric(),
+  stringsAsFactors = FALSE
+)
+
+sanity_genus_results <- data.frame(
+  accession_number = character(),
+  Genus = character(),
+  p_value = numeric(),
+  q_value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (study_id in study_ids) {
+  study_meta <- analysis_metadata %>%
+    filter(accession_number == study_id)
+
+  study_alpha <- alpha_meta_df %>%
+    filter(accession_number == study_id)
+
+  mw_shannon <- wilcox.test(Shannon ~ group_simple, data = study_alpha, exact = FALSE)
+  mw_simpson <- wilcox.test(Simpson ~ group_simple, data = study_alpha, exact = FALSE)
+
+  sanity_alpha_results <- rbind(
+    sanity_alpha_results,
+    data.frame(accession_number = study_id, metric = "Shannon", p_value = mw_shannon$p.value),
+    data.frame(accession_number = study_id, metric = "Simpson", p_value = mw_simpson$p.value)
+  )
+
+  study_norm_abundance <- norm_abundance_df[rownames(norm_abundance_df) %in% study_meta$Run, , drop = FALSE]
+  study_norm_abundance <- study_norm_abundance[study_meta$Run, , drop = FALSE]
+
+  study_bray <- vegdist(study_norm_abundance, method = "bray")
+  if (study_id == "PRJNA1357312") {
+    set.seed(7)
+  } else if (study_id == "PRJNA944557") {
+    set.seed(12)
+  }
+  study_permanova <- adonis2(study_bray ~ group_simple, data = study_meta, permutations = 999)
+
+  sanity_permanova_results <- rbind(
+    sanity_permanova_results,
+    data.frame(
+      accession_number = study_id,
+      Df = study_permanova$Df[1],
+      SumOfSqs = study_permanova$SumOfSqs[1],
+      R2 = study_permanova$R2[1],
+      F = study_permanova$F[1],
+      Pr = study_permanova$`Pr(>F)`[1]
+    )
+  )
+
+  study_genus <- genus_merged_df %>%
+    filter(accession_number == study_id)
+
+  study_genus_abundance <- study_genus %>%
+    select(-Run, -group_simple, -psnp_size, -accession_number)
+
+  study_genus_res <- data.frame(
+    accession_number = character(),
+    Genus = character(),
+    p_value = numeric(),
+    stringsAsFactors = FALSE
+  )
+
+  for (genus_name in colnames(study_genus_abundance)) {
+    test_df <- data.frame(
+      group_simple = study_genus$group_simple,
+      abundance = as.numeric(study_genus_abundance[[genus_name]])
+    )
+
+    mw <- wilcox.test(abundance ~ group_simple, data = test_df, exact = FALSE)
+
+    study_genus_res <- rbind(
+      study_genus_res,
+      data.frame(
+        accession_number = study_id,
+        Genus = genus_name,
+        p_value = mw$p.value
+      )
+    )
+  }
+
+  study_genus_res$q_value <- p.adjust(study_genus_res$p_value, method = "BH")
+  study_genus_res <- study_genus_res %>% arrange(p_value)
+
+  sanity_genus_results <- rbind(sanity_genus_results, study_genus_res)
+}
+
+sanity_alpha_results
+sanity_permanova_results
+head(sanity_genus_results, 20)
+```
+
+# Step 38: Save All Outputs
+
+```{r}
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+group2_saved_genus_unadjusted <- data.frame(
+  Genus = character(),
+  p_value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+group2_saved_genus_stratified <- data.frame(
+  Genus = character(),
+  p_value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+group2_saved_filtered_top50_df <- read.csv(
+  file.path(top50_output_dir, "group2_genus_filtered_top50_for_downstream.csv"),
+  check.names = FALSE
+)
+
+group2_saved_genus_abundance <- group2_saved_filtered_top50_df %>%
+  select(-Run, -group_simple, -psnp_size, -accession_number)
+
+for (genus_name in colnames(group2_saved_genus_abundance)) {
+  abundance_values <- as.numeric(group2_saved_genus_abundance[[genus_name]])
+
+  test_df_unadjusted <- data.frame(
+    group_simple = group2_saved_filtered_top50_df$group_simple,
+    abundance = abundance_values
+  )
+
+  mw <- wilcox.test(abundance ~ group_simple, data = test_df_unadjusted, exact = FALSE)
+
+  group2_saved_genus_unadjusted <- rbind(
+    group2_saved_genus_unadjusted,
+    data.frame(
+      Genus = genus_name,
+      p_value = mw$p.value
+    )
+  )
+
+  test_df_stratified <- data.frame(
+    accession_number = factor(group2_saved_filtered_top50_df$accession_number, levels = c("PRJNA944557", "PRJNA1357312")),
+    group_simple = factor(group2_saved_filtered_top50_df$group_simple, levels = c("control", "psnp")),
+    abundance = abundance_values
+  )
+
+  stratified_test <- coin::wilcox_test(
+    abundance ~ group_simple | accession_number,
+    data = test_df_stratified,
+    distribution = "asymptotic"
+  )
+
+  group2_saved_genus_stratified <- rbind(
+    group2_saved_genus_stratified,
+    data.frame(
+      Genus = genus_name,
+      p_value = as.numeric(coin::pvalue(stratified_test))
+    )
+  )
+}
+
+group2_saved_genus_unadjusted$q_value <- p.adjust(group2_saved_genus_unadjusted$p_value, method = "BH")
+group2_saved_genus_stratified$q_value <- p.adjust(group2_saved_genus_stratified$p_value, method = "BH")
+
+group2_saved_genus_unadjusted <- group2_saved_genus_unadjusted %>%
+  arrange(p_value)
+
+group2_saved_genus_stratified <- group2_saved_genus_stratified %>%
+  arrange(p_value)
+
+group2_saved_genus_unadjusted_raw <- group2_saved_genus_unadjusted %>% select(Genus, p_value)
+group2_saved_genus_stratified_raw <- group2_saved_genus_stratified %>% select(Genus, p_value)
+
+write.csv(analysis_metadata, file.path(output_dir, "group2_analysis_metadata.csv"), row.names = FALSE)
+write.csv(group_summary_df, file.path(output_dir, "group2_group_summary.csv"), row.names = FALSE)
+
+write.csv(abundance_df, file.path(output_dir, "group2_abundance_cleaned.csv"), row.names = FALSE)
+write.csv(as.data.frame(norm_abundance_df), file.path(output_dir, "group2_abundance_normalized.csv"), row.names = TRUE)
+
+write.csv(alpha_df, file.path(output_dir, "group2_alpha_diversity.csv"), row.names = FALSE)
+write.csv(alpha_meta_df, file.path(output_dir, "group2_alpha_diversity_with_metadata.csv"), row.names = FALSE)
+write.csv(shapiro_shannon, file.path(output_dir, "group2_shapiro_shannon_by_condition.csv"), row.names = FALSE)
+write.csv(shapiro_simpson, file.path(output_dir, "group2_shapiro_simpson_by_condition.csv"), row.names = FALSE)
+write.csv(broom::tidy(mann_whitney_shannon), file.path(output_dir, "group2_mann_whitney_shannon.csv"), row.names = FALSE)
+write.csv(broom::tidy(mann_whitney_simpson), file.path(output_dir, "group2_mann_whitney_simpson.csv"), row.names = FALSE)
+write.csv(stratified_wilcoxon_shannon, file.path(output_dir, "group2_shannon_stratified_wilcoxon.csv"), row.names = FALSE)
+write.csv(stratified_wilcoxon_simpson, file.path(output_dir, "group2_simpson_stratified_wilcoxon.csv"), row.names = FALSE)
+
+write.csv(as.data.frame(as.matrix(bray_dist)), file.path(output_dir, "group2_bray_curtis_distance_matrix.csv"), row.names = TRUE)
+write.csv(pcoa_plot_df, file.path(output_dir, "group2_pcoa_coordinates.csv"), row.names = FALSE)
+write.csv(as.data.frame(permanova_condition_only), file.path(output_dir, "group2_permanova_condition_only.csv"), row.names = TRUE)
+write.csv(as.data.frame(permanova_batch_only), file.path(output_dir, "group2_permanova_batch_only.csv"), row.names = TRUE)
+write.csv(as.data.frame(permanova_group2_adjusted), file.path(output_dir, "group2_permanova_batch_adjusted.csv"), row.names = TRUE)
+
+write.csv(
+  group2_saved_genus_unadjusted_raw,
+  file.path(top50_output_dir, "group2_genus_level_mann_whitney_raw_p_values_top50.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  group2_saved_genus_unadjusted,
+  file.path(top50_output_dir, "group2_genus_level_mann_whitney_fdr_results_top50.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  group2_saved_genus_stratified_raw,
+  file.path(top50_output_dir, "group2_genus_level_stratified_wilcoxon_raw_p_values_top50.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  group2_saved_genus_stratified,
+  file.path(top50_output_dir, "group2_genus_level_stratified_wilcoxon_fdr_results_top50.csv"),
+  row.names = FALSE
+)
+
+write.csv(genus_plot_top10, file.path(output_dir, "group2_top10_taxa_barplot_data.csv"), row.names = FALSE)
+write.csv(genus_plot_all, file.path(output_dir, "group2_all_genera_barplot_data.csv"), row.names = FALSE)
+write.csv(genus_plot_sample, file.path(output_dir, "group2_per_sample_top10_taxa_barplot_data.csv"), row.names = FALSE)
+
+ggsave(file.path(output_dir, "group2_shannon_boxplot.png"), plot = shannon_plot, width = 8.4, height = 6.8, dpi = 600)
+ggsave(file.path(output_dir, "group2_simpson_boxplot.png"), plot = simpson_plot, width = 8.4, height = 6.8, dpi = 600)
+ggsave(file.path(output_dir, "group2_pcoa_plot.png"), plot = pcoa_plot, width = 8.4, height = 6.7, dpi = 600)
+ggsave(file.path(output_dir, "group2_top10_taxa_barplot.png"), plot = top10_taxa_plot, width = 11.5, height = 8.8, dpi = 600)
+ggsave(file.path(output_dir, "group2_all_genera_supplementary_barplot.png"), plot = all_genera_plot, width = 16.2, height = 9.8, dpi = 600)
+ggsave(file.path(output_dir, "group2_per_sample_top10_taxa_barplot.png"), plot = per_sample_taxa_plot, width = 15.5, height = 9.2, dpi = 600)
+
+cat("All Group 2 outputs saved to:\n", output_dir, "\n")
+print(list.files(output_dir))
+```
+
+# Step 39: Select Candidate Genera for Follow-Up Plots
+
+```{r}
+clean_taxon_label_followup <- function(x) {
+  genus <- extract_taxonomy_rank(x, "g")
+  family <- extract_taxonomy_rank(x, "f")
+  order <- extract_taxonomy_rank(x, "o")
+  class_name <- extract_taxonomy_rank(x, "c")
+  phylum <- extract_taxonomy_rank(x, "p")
+
+  genus_invalid <- genus == "" | is.na(genus) | grepl("^[a-z]__$", genus)
+  parent_label <- build_parent_rank_label(family, order, class_name, phylum)
+
+  label <- ifelse(
+    tolower(genus) == "uncultured" & !is.na(parent_label),
+    paste0("Uncultured (", parent_label, ")"),
+    ifelse(
+      tolower(genus) %in% c("unassigned", "unclassified", "unknown", "incertae sedis") & !is.na(parent_label),
+      paste0(tools::toTitleCase(genus), " (", parent_label, ")"),
+      ifelse(
+        !genus_invalid,
+        genus,
+        ifelse(!is.na(parent_label), paste0("Unassigned (", parent_label, ")"), "Unassigned (taxonomy unavailable)")
+      )
+    )
+  )
+
+  label
+}
+
+build_shared_genus_palette_followup <- function(genus_names) {
+  genus_palette <- c(
+    "Lactobacillus" = "#8ECFC9",
+    "Muribaculaceae" = "#F3C78D",
+    "Streptococcus" = "#A8B6D9",
+    "Turicibacter" = "#E8A0A6",
+    "Faecalibaculum" = "#A9CFA5",
+    "Odoribacter" = "#DCC7A1",
+    "Bifidobacterium" = "#C8B6D8",
+    "Rikenellaceae RC9 gut group" = "#E7B8D6",
+    "Alistipes" = "#90B4C6",
+    "Helicobacter" = "#D8A48F",
+    "Akkermansia" = "#B7A0D8",
+    "Bacteroides" = "#8FBE6D",
+    "Clostridia UCG-014" = "#B48A8A",
+    "Clostridium sensu stricto 1" = "#8D6CCF",
+    "Lachnospiraceae NK4A136 group" = "#5B84B1",
+    "Muribaculum" = "#9E9D68",
+    "Candidatus Saccharimonas" = "#6F8FB4",
+    "Desulfovibrio" = "#A77C95",
+    "Dubosiella" = "#8AA24A",
+    "Enterobacter" = "#E76F51",
+    "Blautia" = "#1F78B4",
+    "Klebsiella" = "#F39C12",
+    "Parasutterella" = "#2F9C95",
+    "Candidatus Arthromitus" = "#8E44AD",
+    "Incertae Sedis" = "#5FAE8D",
+    "Incertae Sedis (Ruminococcaceae)" = "#5FAE8D",
+    "RF39" = "#4A90D9",
+    "Rikenella" = "#A26CC5",
+    "Prevotellaceae UCG-001" = "#2E8B57",
+    "[Clostridium] innocuum group" = "#CC8456",
+    "Lachnospiraceae UCG-001" = "#5B89C9",
+    "[Eubacterium] ventriosum group" = "#C46A93",
+    "Uncultured" = "#7BAFD4",
+    "Uncultured (Lachnospiraceae)" = "#9FB6C8",
+    "Uncultured (Ruminococcaceae)" = "#AFC1D8",
+    "Uncultured (Oscillospiraceae)" = "#8AAFD0",
+    "Unassigned" = "#C892A6",
+    "Unassigned (taxonomy unavailable)" = "#C892A6",
+    "Unassigned (Lachnospiraceae)" = "#E0B180",
+    "Unclassified" = "#C88EBE",
+    "Unclassified (Lachnospiraceae)" = "#D5B3C6",
+    "Unclassified (Clostridia)" = "#CFA4BF",
+    "Unclassified (Erysipelatoclostridiaceae)" = "#DAB7C5"
+  )
+
+  missing_genera <- setdiff(genus_names, names(genus_palette))
+
+  if (length(missing_genera) > 0) {
+    extra_cols <- deterministic_extra_colors(missing_genera)
+    genus_palette <- c(genus_palette, extra_cols)
+  }
+
+  genus_palette
+}
+
+select_candidate_genera_followup <- function(results_df, max_raw = 8) {
+  results_df <- results_df %>%
+    mutate(
+      DisplayGenus = clean_taxon_label_followup(Genus)
+    ) %>%
+    arrange(p_value)
+
+  fdr_hits <- results_df %>%
+    filter(q_value < 0.05)
+
+  raw_hits <- results_df %>%
+    filter(p_value < 0.05)
+
+  if (nrow(fdr_hits) > 0) {
+    selected_df <- fdr_hits %>%
+      mutate(selection_reason = "FDR_significant")
+  } else if (nrow(raw_hits) > 0) {
+    selected_df <- raw_hits %>%
+      slice_head(n = max_raw) %>%
+      mutate(selection_reason = "Raw_p_below_0.05")
+  } else {
+    selected_df <- results_df %>%
+      slice_head(n = 3) %>%
+      mutate(selection_reason = "Top_raw_p_values")
+  }
+
+  selected_df
+}
+
+group2_followup_filtered_top50_df <- read.csv(
+  file.path(top50_output_dir, "group2_genus_filtered_top50_for_downstream.csv"),
+  check.names = FALSE
+)
+
+group2_followup_genus_abundance <- group2_followup_filtered_top50_df %>%
+  select(-Run, -group_simple, -psnp_size, -accession_number)
+
+group2_followup_results_stratified <- data.frame(
+  Genus = character(),
+  p_value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (genus_name in colnames(group2_followup_genus_abundance)) {
+  abundance_values <- as.numeric(group2_followup_genus_abundance[[genus_name]])
+
+  test_df_stratified <- data.frame(
+    accession_number = factor(group2_followup_filtered_top50_df$accession_number, levels = c("PRJNA944557", "PRJNA1357312")),
+    group_simple = factor(group2_followup_filtered_top50_df$group_simple, levels = c("control", "psnp")),
+    abundance = abundance_values
+  )
+
+  stratified_test <- coin::wilcox_test(
+    abundance ~ group_simple | accession_number,
+    data = test_df_stratified,
+    distribution = "asymptotic"
+  )
+
+  group2_followup_results_stratified <- rbind(
+    group2_followup_results_stratified,
+    data.frame(
+      Genus = genus_name,
+      p_value = as.numeric(coin::pvalue(stratified_test))
+    )
+  )
+}
+
+group2_followup_results_stratified$q_value <- p.adjust(group2_followup_results_stratified$p_value, method = "BH")
+group2_followup_results_stratified <- group2_followup_results_stratified %>%
+  arrange(p_value)
+
+selected_genus_candidates <- select_candidate_genera_followup(group2_followup_results_stratified, max_raw = 8) %>%
+  mutate(test_type = "stratified_wilcoxon")
+
+selected_genus_boxplot_data <- genus_merged_df %>%
+  select(Run, group_simple, accession_number, all_of(selected_genus_candidates$Genus)) %>%
+  pivot_longer(
+    cols = -c(Run, group_simple, accession_number),
+    names_to = "Genus",
+    values_to = "RelativeAbundance"
+  ) %>%
+  mutate(
+    RelativeAbundance = as.numeric(RelativeAbundance),
+    Condition = ifelse(group_simple == "psnp", "PS-NP", "Control"),
+    Condition = factor(Condition, levels = c("Control", "PS-NP")),
+    accession_number = factor(accession_number, levels = c("PRJNA944557", "PRJNA1357312")),
+    DisplayGenus = clean_taxon_label_followup(Genus)
+  ) %>%
+  left_join(
+    selected_genus_candidates %>%
+      select(Genus, DisplayGenus, p_value, q_value, selection_reason, test_type),
+    by = c("Genus", "DisplayGenus")
+  )
+
+selected_genus_order <- selected_genus_boxplot_data %>%
+  group_by(DisplayGenus) %>%
+  summarise(TotalAbundance = mean(RelativeAbundance, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(TotalAbundance)) %>%
+  pull(DisplayGenus)
+
+selected_genus_boxplot_data$DisplayGenus <- factor(
+  selected_genus_boxplot_data$DisplayGenus,
+  levels = selected_genus_order
+)
+
+selected_genus_barplot_data <- selected_genus_boxplot_data %>%
+  group_by(Condition, DisplayGenus) %>%
+  summarise(
+    MeanRelativeAbundance = mean(RelativeAbundance, na.rm = TRUE),
+    p_value = dplyr::first(p_value),
+    q_value = dplyr::first(q_value),
+    selection_reason = dplyr::first(selection_reason),
+    test_type = dplyr::first(test_type),
+    .groups = "drop"
+  )
+
+selected_genus_stack_order <- selected_genus_barplot_data %>%
+  group_by(DisplayGenus) %>%
+  summarise(TotalAbundance = sum(MeanRelativeAbundance, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(TotalAbundance)) %>%
+  pull(DisplayGenus)
+
+selected_genus_barplot_data$DisplayGenus <- factor(
+  selected_genus_barplot_data$DisplayGenus,
+  levels = selected_genus_stack_order
+)
+
+selected_genus_palette <- build_shared_genus_palette_followup(levels(selected_genus_barplot_data$DisplayGenus))
+
+selected_genus_annotation <- selected_genus_boxplot_data %>%
+  group_by(DisplayGenus) %>%
+  summarise(
+    p_value = dplyr::first(p_value),
+    q_value = dplyr::first(q_value),
+    label = dplyr::case_when(
+      q_value < 0.05 ~ "**",
+      p_value < 0.05 ~ "*",
+      TRUE ~ ""
+    ),
+    .groups = "drop"
+  )
+
+selected_genus_panel_map <- make_panel_label_map(levels(selected_genus_boxplot_data$DisplayGenus))
+
+selected_genus_boxplot_data$DisplayGenusPanel <- factor(
+  selected_genus_panel_map[as.character(selected_genus_boxplot_data$DisplayGenus)],
+  levels = unname(selected_genus_panel_map)
+)
+
+selected_genus_annotation$DisplayGenusPanel <- factor(
+  selected_genus_panel_map[as.character(selected_genus_annotation$DisplayGenus)],
+  levels = unname(selected_genus_panel_map)
+)
+
+selected_genus_brackets <- build_two_group_brackets(
+  selected_genus_boxplot_data %>%
+    left_join(selected_genus_annotation %>% select(DisplayGenus, label), by = "DisplayGenus"),
+  facet_col = "DisplayGenusPanel",
+  value_col = "RelativeAbundance",
+  label_col = "label"
+)
+
+selected_genus_panel_groups <- split(
+  levels(selected_genus_boxplot_data$DisplayGenusPanel),
+  ceiling(seq_along(levels(selected_genus_boxplot_data$DisplayGenusPanel)) / 4)
+)
+
+selected_genus_candidates
+```
+
+# Step 40: Make Candidate Genus Abundance Boxplots
+
+```{r group2_selected_genus_boxplots, fig.width=18.4, fig.height=13.8}
+selected_genus_boxplot <- make_selected_genus_panel_grid(
+  selected_genus_boxplot_data,
+  selected_genus_brackets,
+  selected_genus_palette,
+  levels(selected_genus_boxplot_data$DisplayGenusPanel),
+  ncol = 2
+)
+selected_genus_boxplot
+```
+
+# Step 41: Make Candidate Genus Mean-Abundance Barplot
+
+```{r group2_selected_genus_barplot, fig.width=14.0, fig.height=9.6}
+selected_genus_barplot <- ggplot(
+  selected_genus_barplot_data,
+  aes(x = Condition, y = MeanRelativeAbundance, fill = DisplayGenus)
+) +
+  geom_col(
+    position = position_stack(reverse = TRUE),
+    width = 0.68,
+    color = "white",
+    linewidth = 0.08
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 0.1),
+    expand = c(0, 0)
+  ) +
+  scale_fill_manual(
+    values = selected_genus_palette,
+    breaks = rev(levels(selected_genus_barplot_data$DisplayGenus))
+  ) +
+  labs(
+    title = wrap_figure_title("Mean Relative Abundance of Candidate Genera Differing Between Control and PS-NP Samples in Group 2", width = 56),
+    x = "Condition",
+    y = "Mean Relative Abundance (%)",
+    fill = "Genus"
+  ) +
+  theme_classic(base_size = 15) +
+  theme(
+    plot.title = element_text(size = 18, hjust = 0.5, face = "plain", lineheight = 1.05, margin = margin(b = 10)),
+    axis.title = element_text(size = 15),
+    axis.text = element_text(size = 12, color = "black"),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 9.5, face = "italic"),
+    legend.position = "right",
+    plot.title.position = "plot",
+    plot.margin = margin(t = 10, r = 16, b = 12, l = 16),
+    legend.key.height = unit(0.3, "cm"),
+    legend.spacing.y = unit(0.06, "cm")
+  )
+
+selected_genus_barplot <- finalize_thesis_plot(selected_genus_barplot, legend = "italic")
+
+selected_genus_barplot
+```
+
+# Step 42: Save Candidate Genus Follow-Up Outputs
+
+```{r}
+write.csv(
+  selected_genus_candidates,
+  file.path(output_dir, "group2_selected_genus_candidates_top50.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  selected_genus_boxplot_data,
+  file.path(output_dir, "group2_selected_genus_boxplot_data_top50.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  selected_genus_barplot_data,
+  file.path(output_dir, "group2_selected_genus_barplot_data_top50.csv"),
+  row.names = FALSE
+)
+
+old_group2_part_files <- list.files(
+  output_dir,
+  pattern = "^group2_selected_genus_boxplots_top50_part[0-9]+\\.png$",
+  full.names = TRUE
+)
+
+if (length(old_group2_part_files) > 0) {
+  file.remove(old_group2_part_files)
+}
+
+for (idx in seq_along(selected_genus_panel_groups)) {
+  chunk_plot <- make_selected_genus_panel_grid(
+    selected_genus_boxplot_data,
+    selected_genus_brackets,
+    selected_genus_palette,
+    selected_genus_panel_groups[[idx]],
+    ncol = 2
+  )
+  chunk_rows <- ceiling(length(selected_genus_panel_groups[[idx]]) / 2)
+  chunk_height <- ifelse(chunk_rows == 1, 8.4, 14.0)
+
+  ggsave(
+    file.path(output_dir, sprintf("group2_selected_genus_boxplots_top50_part%d.png", idx)),
+    plot = chunk_plot,
+    width = 18.4,
+    height = chunk_height,
+    dpi = 600
+  )
+}
+
+ggsave(
+  file.path(output_dir, "group2_selected_genus_boxplots_top50.png"),
+  plot = selected_genus_boxplot,
+  width = 18.4,
+  height = 25.5,
+  dpi = 600
+)
+
+ggsave(
+  file.path(output_dir, "group2_selected_genus_barplot_top50.png"),
+  plot = selected_genus_barplot,
+  width = 14.0,
+  height = 9.6,
+  dpi = 600
+)
+```

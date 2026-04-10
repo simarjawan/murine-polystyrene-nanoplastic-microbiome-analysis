@@ -1,0 +1,853 @@
+---
+title: "Group 2 Exploratory Analysis Differentiated by BioProject Accession"
+author: "Simar Jawanda"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  dev = "png",
+  fig.ext = "png",
+  dpi = 300
+)
+```
+
+# Step 1: Load Packages
+
+```{r}
+library(broom)
+library(dplyr)
+library(ggh4x)
+library(ggplot2)
+library(tidyr)
+library(tibble)
+library(vegan)
+library(scales)
+
+wrap_figure_title <- function(title_text, width = 62) {
+  paste(strwrap(title_text, width = width), collapse = "\n")
+}
+
+finalize_thesis_plot <- function(plot, legend = c("none", "plain", "italic")) {
+  legend <- match.arg(legend)
+
+  if (!is.null(plot$labels$x) && identical(plot$labels$x, "Condition")) {
+    plot <- plot + labs(x = NULL)
+  }
+
+  plot <- plot +
+    labs(title = NULL) +
+    theme(
+      plot.title = element_blank(),
+      plot.title.position = "panel",
+      axis.line = element_line(linewidth = 1.1, colour = "black"),
+      axis.ticks = element_line(linewidth = 0.95, colour = "black"),
+      axis.ticks.length = grid::unit(0.18, "cm"),
+      axis.title.x = element_text(size = 15, face = "bold", colour = "black"),
+      axis.title.y = element_text(size = 15, face = "bold", colour = "black"),
+      axis.text.x = element_text(size = 12.5, face = "bold", colour = "black"),
+      axis.text.y = element_text(size = 12.5, face = "bold", colour = "black"),
+      strip.background = element_rect(fill = "white", colour = "black", linewidth = 1.1),
+      strip.text = element_text(size = 13.5, face = "bold", colour = "black")
+    )
+
+  if (legend != "none") {
+    plot <- plot +
+      guides(
+        fill = guide_legend(ncol = 1, byrow = TRUE),
+        colour = guide_legend(ncol = 1, byrow = TRUE),
+        shape = guide_legend(ncol = 1, byrow = TRUE)
+      ) +
+      theme(
+        legend.title = element_text(size = 17, face = "bold"),
+        legend.text = element_text(size = 14.5, face = ifelse(legend == "italic", "italic", "plain")),
+        legend.key.width = grid::unit(0.55, "cm"),
+        legend.key.height = grid::unit(0.62, "cm"),
+        legend.spacing.y = grid::unit(0.14, "cm"),
+        legend.box = "vertical"
+      )
+  }
+
+  plot
+}
+
+make_panel_label_map <- function(labels) {
+  panel_labels <- paste0(LETTERS[seq_along(labels)], ". ", labels)
+  stats::setNames(panel_labels, labels)
+}
+
+build_two_group_brackets <- function(data, facet_col, value_col, label_col) {
+  data %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(facet_col))) %>%
+    dplyr::summarise(
+      bracket_y = max(.data[[value_col]], na.rm = TRUE) * 1.20 + 1e-06,
+      label = dplyr::first(.data[[label_col]]),
+      .groups = "drop"
+    ) %>%
+    dplyr::filter(!is.na(label), label != "") %>%
+    dplyr::mutate(
+      x_start = 1,
+      x_end = 2,
+      x_mid = 1.5,
+      tick_drop = pmax(bracket_y * 0.04, 1e-06),
+      label_y = bracket_y + pmax(bracket_y * 0.055, 1e-06)
+    )
+}
+
+add_two_group_brackets <- function(plot, bracket_df, text_size = 6) {
+  if (nrow(bracket_df) == 0) {
+    return(plot)
+  }
+
+  plot +
+    geom_segment(
+      data = bracket_df,
+      aes(x = x_start, xend = x_end, y = bracket_y, yend = bracket_y),
+      inherit.aes = FALSE,
+      linewidth = 0.9
+    ) +
+    geom_segment(
+      data = bracket_df,
+      aes(x = x_start, xend = x_start, y = bracket_y, yend = bracket_y - tick_drop),
+      inherit.aes = FALSE,
+      linewidth = 0.9
+    ) +
+    geom_segment(
+      data = bracket_df,
+      aes(x = x_end, xend = x_end, y = bracket_y, yend = bracket_y - tick_drop),
+      inherit.aes = FALSE,
+      linewidth = 0.9
+    ) +
+    geom_text(
+      data = bracket_df,
+      aes(x = x_mid, y = label_y, label = label),
+      inherit.aes = FALSE,
+      size = text_size,
+      fontface = "bold"
+    )
+}
+
+
+deterministic_extra_colors <- function(labels, chroma = 55, luminance = 70) {
+  colors <- vapply(labels, function(lbl) {
+    ints <- utf8ToInt(enc2utf8(lbl))
+    hue <- sum(ints * seq_along(ints)) %% 360
+    grDevices::hcl(h = hue, c = chroma, l = luminance)
+  }, character(1))
+  stats::setNames(colors, labels)
+}
+```
+
+# Step 2: Define Helper Functions
+
+```{r}
+run_shapiro_by_project <- function(data, value_col) {
+  project_list <- split(data, data$accession_number)
+
+  bind_rows(
+    lapply(
+      names(project_list),
+      function(project_id) {
+        project_df <- project_list[[project_id]]
+        bind_rows(
+          lapply(
+            split(project_df[[value_col]], project_df$group_simple),
+            function(values) {
+              if (length(values) >= 3 && length(values) <= 5000) {
+                test <- shapiro.test(values)
+                tibble(
+                  n = length(values),
+                  statistic = unname(test$statistic),
+                  p_value = unname(test$p.value),
+                  method = unname(test$method)
+                )
+              } else {
+                tibble(
+                  n = length(values),
+                  statistic = NA_real_,
+                  p_value = NA_real_,
+                  method = "Shapiro-Wilk not run; sample size outside 3-5000"
+                )
+              }
+            }
+          ),
+          .id = "group_simple"
+        ) %>%
+          mutate(
+            accession_number = project_id,
+            metric = value_col
+          ) %>%
+          relocate(accession_number, metric, .before = group_simple)
+      }
+    )
+  )
+}
+
+run_mann_whitney_by_project <- function(data, value_col) {
+  project_list <- split(data, data$accession_number)
+
+  bind_rows(
+    lapply(
+      names(project_list),
+      function(project_id) {
+        project_df <- project_list[[project_id]]
+
+        control_n <- sum(project_df$group_simple == "control", na.rm = TRUE)
+        psnp_n <- sum(project_df$group_simple == "psnp", na.rm = TRUE)
+
+        if (control_n > 0 && psnp_n > 0) {
+          test <- wilcox.test(
+            reformulate("group_simple", response = value_col),
+            data = project_df,
+            exact = FALSE
+          )
+
+          tibble(
+            accession_number = project_id,
+            metric = value_col,
+            n_control = control_n,
+            n_psnp = psnp_n,
+            statistic = unname(test$statistic),
+            p_value = unname(test$p.value),
+            method = test$method
+          )
+        } else {
+          tibble(
+            accession_number = project_id,
+            metric = value_col,
+            n_control = control_n,
+            n_psnp = psnp_n,
+            statistic = NA_real_,
+            p_value = NA_real_,
+            method = "Mann-Whitney not run; one condition missing"
+          )
+        }
+      }
+    )
+  )
+}
+
+extract_taxonomy_rank <- function(x, rank_letter) {
+  pattern <- paste0("(?:^|;)", rank_letter, "_{1,2}([^;]+)")
+  value <- stringr::str_match(x, pattern)[, 2]
+  value <- ifelse(is.na(value), "", value)
+  trimws(gsub("_", " ", value))
+}
+
+build_parent_rank_label <- function(family, order, class_name, phylum) {
+  invalid_or_generic <- function(v) {
+    v == "" | is.na(v) | grepl("^[a-zA-Z]__$", v) |
+      tolower(v) %in% c("unassigned", "unclassified", "unknown", "uncultured", "incertae sedis")
+  }
+
+  family_invalid <- invalid_or_generic(family)
+  order_invalid <- invalid_or_generic(order)
+  class_invalid <- invalid_or_generic(class_name)
+  phylum_invalid <- invalid_or_generic(phylum)
+
+  parent_taxon <- ifelse(
+    !family_invalid, family,
+    ifelse(
+      !order_invalid, order,
+      ifelse(!class_invalid, class_name, ifelse(!phylum_invalid, phylum, NA_character_))
+    )
+  )
+
+  parent_rank <- ifelse(
+    !family_invalid, "family",
+    ifelse(
+      !order_invalid, "order",
+      ifelse(!class_invalid, "class", ifelse(!phylum_invalid, "phylum", NA_character_))
+    )
+  )
+
+  ifelse(
+    !is.na(parent_taxon) & !is.na(parent_rank),
+    paste0(parent_rank, ": ", parent_taxon),
+    NA_character_
+  )
+}
+
+clean_taxon_label_followup <- function(x) {
+  genus <- extract_taxonomy_rank(x, "g")
+  family <- extract_taxonomy_rank(x, "f")
+  order <- extract_taxonomy_rank(x, "o")
+  class_name <- extract_taxonomy_rank(x, "c")
+  phylum <- extract_taxonomy_rank(x, "p")
+
+  genus_invalid <- genus == "" | is.na(genus) | grepl("^[a-z]__$", genus)
+  parent_label <- build_parent_rank_label(family, order, class_name, phylum)
+  genus_lower <- tolower(genus)
+
+  label <- ifelse(
+    !genus_invalid & !genus_lower %in% c("uncultured", "unassigned", "unclassified", "unknown", "incertae sedis"),
+    genus,
+    ifelse(
+      genus_lower == "uncultured",
+      ifelse(!is.na(parent_label), paste0("Uncultured (", parent_label, ")"), "Uncultured (taxonomy unavailable)"),
+      ifelse(
+        genus_lower %in% c("unassigned", "unclassified", "unknown", "incertae sedis"),
+        ifelse(!is.na(parent_label), paste0(tools::toTitleCase(genus), " (", parent_label, ")"), tools::toTitleCase(genus)),
+        ifelse(!is.na(parent_label), paste0("Unassigned (", parent_label, ")"), "Unassigned (taxonomy unavailable)")
+      )
+    )
+  )
+
+  label <- ifelse(label == "" | is.na(label), "Unclassified", label)
+  label
+}
+
+build_shared_genus_palette_followup <- function(genus_names) {
+  genus_palette <- c(
+    "Lactobacillus" = "#8ECFC9",
+    "Muribaculaceae" = "#F3C78D",
+    "Streptococcus" = "#A8B6D9",
+    "Turicibacter" = "#E8A0A6",
+    "Faecalibaculum" = "#A9CFA5",
+    "Odoribacter" = "#DCC7A1",
+    "Bifidobacterium" = "#C8B6D8",
+    "Rikenellaceae RC9 gut group" = "#E7B8D6",
+    "Alistipes" = "#90B4C6",
+    "Helicobacter" = "#D8A48F",
+    "Akkermansia" = "#B7A0D8",
+    "Bacteroides" = "#8FBE6D",
+    "Clostridia UCG-014" = "#B48A8A",
+    "Clostridium sensu stricto 1" = "#8D6CCF",
+    "Lachnospiraceae NK4A136 group" = "#5B84B1",
+    "Muribaculum" = "#9E9D68",
+    "Candidatus Saccharimonas" = "#6F8FB4",
+    "Desulfovibrio" = "#A77C95",
+    "Dubosiella" = "#8AA24A",
+    "Enterobacter" = "#E76F51",
+    "Blautia" = "#1F78B4",
+    "Klebsiella" = "#F39C12",
+    "Parasutterella" = "#2F9C95",
+    "Candidatus Arthromitus" = "#8E44AD",
+    "Incertae Sedis" = "#5FAE8D",
+    "Incertae Sedis (Ruminococcaceae)" = "#5FAE8D",
+    "RF39" = "#4A90D9",
+    "Rikenella" = "#A26CC5",
+    "Prevotellaceae UCG-001" = "#2E8B57",
+    "[Clostridium] innocuum group" = "#CC8456",
+    "Lachnospiraceae UCG-001" = "#5B89C9",
+    "[Eubacterium] ventriosum group" = "#C46A93",
+    "Uncultured" = "#7BAFD4",
+    "Uncultured (Lachnospiraceae)" = "#9FB6C8",
+    "Uncultured (Ruminococcaceae)" = "#AFC1D8",
+    "Uncultured (Oscillospiraceae)" = "#8AAFD0",
+    "Unassigned" = "#C892A6",
+    "Unassigned (taxonomy unavailable)" = "#C892A6",
+    "Unassigned (Lachnospiraceae)" = "#E0B180",
+    "Unclassified" = "#C88EBE",
+    "Unclassified (Lachnospiraceae)" = "#D5B3C6",
+    "Unclassified (Clostridia)" = "#CFA4BF",
+    "Unclassified (Erysipelatoclostridiaceae)" = "#DAB7C5"
+  )
+
+  missing_genera <- setdiff(genus_names, names(genus_palette))
+
+  if (length(missing_genera) > 0) {
+    extra_cols <- deterministic_extra_colors(missing_genera)
+    genus_palette <- c(genus_palette, extra_cols)
+  }
+
+  genus_palette
+}
+```
+
+# Step 3: Read the Current Group 2 Files
+
+```{r}
+output_dir <- "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 2 Exploratory Outputs"
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+alpha_meta_df <- read.csv(
+  "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 2 Outputs/group2_alpha_diversity_with_metadata.csv",
+  stringsAsFactors = FALSE
+)
+
+analysis_metadata <- read.csv(
+  "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 2 Outputs/group2_analysis_metadata.csv",
+  stringsAsFactors = FALSE
+)
+
+norm_abundance_df <- read.csv(
+  "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 2 Outputs/group2_abundance_normalized.csv",
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+group2_top50_df <- read.csv(
+  "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 2 Outputs/pca_top50/group2_genus_filtered_top50_for_downstream.csv",
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+selected_genus_candidates <- read.csv(
+  "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 2 Outputs/group2_selected_genus_candidates_top50.csv",
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+dim(alpha_meta_df)
+dim(group2_top50_df)
+selected_genus_candidates
+```
+
+# Step 4: Run Per-Project Alpha Exploratory Tests
+
+```{r}
+alpha_shapiro_by_project <- bind_rows(
+  run_shapiro_by_project(alpha_meta_df, "Shannon"),
+  run_shapiro_by_project(alpha_meta_df, "Simpson")
+)
+
+alpha_mann_whitney_by_project <- bind_rows(
+  run_mann_whitney_by_project(alpha_meta_df, "Shannon"),
+  run_mann_whitney_by_project(alpha_meta_df, "Simpson")
+)
+
+alpha_shapiro_by_project
+alpha_mann_whitney_by_project
+```
+
+# Step 5: Make Per-Project Alpha-Diversity Boxplots
+
+```{r}
+alpha_plot_data_by_project <- alpha_meta_df %>%
+  mutate(
+    Condition = ifelse(group_simple == "psnp", "PS-NP", "Control"),
+    Condition = factor(Condition, levels = c("Control", "PS-NP")),
+    accession_number = factor(accession_number, levels = c("PRJNA944557", "PRJNA1357312"))
+  )
+
+shannon_annotation_by_project <- alpha_plot_data_by_project %>%
+  distinct(accession_number) %>%
+  left_join(
+    alpha_mann_whitney_by_project %>%
+      filter(metric == "Shannon") %>%
+      mutate(label = ifelse(p_value < 0.05, "*", "")) %>%
+      select(accession_number, label),
+    by = "accession_number"
+  )
+
+simpson_annotation_by_project <- alpha_plot_data_by_project %>%
+  distinct(accession_number) %>%
+  left_join(
+    alpha_mann_whitney_by_project %>%
+      filter(metric == "Simpson") %>%
+      mutate(label = ifelse(p_value < 0.05, "*", "")) %>%
+      select(accession_number, label),
+    by = "accession_number"
+  )
+
+alpha_plot_data_by_project <- alpha_plot_data_by_project %>%
+  mutate(
+    accession_panel = factor(
+      as.character(accession_number),
+      levels = c("PRJNA944557", "PRJNA1357312")
+    )
+  )
+
+shannon_annotation_by_project <- shannon_annotation_by_project %>%
+  mutate(
+    accession_panel = factor(
+      as.character(accession_number),
+      levels = c("PRJNA944557", "PRJNA1357312")
+    )
+  )
+
+simpson_annotation_by_project <- simpson_annotation_by_project %>%
+  mutate(
+    accession_panel = factor(
+      as.character(accession_number),
+      levels = c("PRJNA944557", "PRJNA1357312")
+    )
+  )
+
+shannon_brackets_by_project <- build_two_group_brackets(
+  alpha_plot_data_by_project %>%
+    left_join(shannon_annotation_by_project %>% select(accession_number, label), by = "accession_number"),
+  facet_col = "accession_panel",
+  value_col = "Shannon",
+  label_col = "label"
+)
+
+simpson_brackets_by_project <- build_two_group_brackets(
+  alpha_plot_data_by_project %>%
+    left_join(simpson_annotation_by_project %>% select(accession_number, label), by = "accession_number"),
+  facet_col = "accession_panel",
+  value_col = "Simpson",
+  label_col = "label"
+)
+
+```
+
+```{r group2_exploratory_shannon_boxplot, fig.width=11.5, fig.height=6.8}
+group2_exploratory_shannon_boxplot <- ggplot(alpha_plot_data_by_project, aes(x = Condition, y = Shannon, fill = Condition)) +
+  stat_boxplot(geom = "errorbar", width = 0.18, linewidth = 0.8, coef = 1.5) +
+  geom_boxplot(outlier.shape = NA, width = 0.5, color = "black", linewidth = 0.8, coef = 1.5) +
+  geom_jitter(shape = 21, width = 0.08, size = 3.0, color = "black", stroke = 0.45, alpha = 0.8) +
+  facet_grid2(cols = vars(accession_panel)) +
+  scale_fill_manual(values = c("Control" = "#B7D9F2", "PS-NP" = "#F2B6A7")) +
+  scale_y_continuous(expand = expansion(mult = c(0.02, 0.28))) +
+  theme_classic(base_size = 15) +
+  labs(
+    title = wrap_figure_title("Shannon Alpha Diversity in Group 2 Differentiated by BioProject Accession"),
+    x = "Condition",
+    y = "Shannon Index"
+  ) +
+  theme(
+    plot.title = element_text(size = 17, hjust = 0.5, face = "plain", lineheight = 1.05, margin = margin(b = 10)),
+    axis.title = element_text(size = 15),
+    axis.text = element_text(size = 12, color = "black"),
+    strip.background = element_blank(),
+    strip.text = element_text(size = 13, face = "plain"),
+    legend.position = "none"
+  )
+
+group2_exploratory_shannon_boxplot <- add_two_group_brackets(group2_exploratory_shannon_boxplot, shannon_brackets_by_project, text_size = 6.8)
+group2_exploratory_shannon_boxplot <- finalize_thesis_plot(group2_exploratory_shannon_boxplot, legend = "none") +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(size = 18.5, face = "bold", colour = "black", margin = margin(b = 8)),
+    axis.title.y = element_text(size = 23, face = "bold", colour = "black"),
+    axis.text.x = element_text(size = 18.5, face = "bold", colour = "black"),
+    axis.text.y = element_text(size = 16.8, face = "bold", colour = "black")
+  )
+
+group2_exploratory_shannon_boxplot
+```
+
+```{r group2_exploratory_simpson_boxplot, fig.width=11.5, fig.height=6.8}
+group2_exploratory_simpson_boxplot <- ggplot(alpha_plot_data_by_project, aes(x = Condition, y = Simpson, fill = Condition)) +
+  stat_boxplot(geom = "errorbar", width = 0.18, linewidth = 0.8, coef = 1.5) +
+  geom_boxplot(outlier.shape = NA, width = 0.5, color = "black", linewidth = 0.8, coef = 1.5) +
+  geom_jitter(shape = 21, width = 0.08, size = 3.0, color = "black", stroke = 0.45, alpha = 0.8) +
+  facet_grid2(cols = vars(accession_panel)) +
+  scale_fill_manual(values = c("Control" = "#B7D9F2", "PS-NP" = "#F2B6A7")) +
+  scale_y_continuous(expand = expansion(mult = c(0.02, 0.28))) +
+  theme_classic(base_size = 15) +
+  labs(
+    title = wrap_figure_title("Simpson Alpha Diversity in Group 2 Differentiated by BioProject Accession"),
+    x = "Condition",
+    y = "Simpson Index"
+  ) +
+  theme(
+    plot.title = element_text(size = 17, hjust = 0.5, face = "plain", lineheight = 1.05, margin = margin(b = 10)),
+    axis.title = element_text(size = 15),
+    axis.text = element_text(size = 12, color = "black"),
+    strip.background = element_blank(),
+    strip.text = element_text(size = 13, face = "plain"),
+    legend.position = "none"
+  )
+
+group2_exploratory_simpson_boxplot <- add_two_group_brackets(group2_exploratory_simpson_boxplot, simpson_brackets_by_project, text_size = 6.8)
+group2_exploratory_simpson_boxplot <- finalize_thesis_plot(group2_exploratory_simpson_boxplot, legend = "none") +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(size = 18.5, face = "bold", colour = "black", margin = margin(b = 8)),
+    axis.title.y = element_text(size = 23, face = "bold", colour = "black"),
+    axis.text.x = element_text(size = 18.5, face = "bold", colour = "black"),
+    axis.text.y = element_text(size = 16.8, face = "bold", colour = "black")
+  )
+
+group2_exploratory_simpson_boxplot
+```
+
+# Step 6: Run Per-BioProject Beta Diversity Exploratory Tests
+
+```{r}
+colnames(norm_abundance_df)[1] <- "Run"
+
+norm_merged_df <- analysis_metadata %>%
+  select(Run, group_simple, accession_number) %>%
+  inner_join(norm_abundance_df, by = "Run")
+
+beta_by_project <- bind_rows(
+  lapply(
+    split(norm_merged_df, norm_merged_df$accession_number),
+    function(project_df) {
+      abundance_only <- project_df %>%
+        select(-Run, -group_simple, -accession_number) %>%
+        mutate(across(everything(), as.numeric))
+
+      bray_dist <- vegan::vegdist(abundance_only, method = "bray")
+      if (unique(project_df$accession_number) == "PRJNA1357312") {
+        set.seed(7)
+      } else if (unique(project_df$accession_number) == "PRJNA944557") {
+        set.seed(12)
+      }
+
+      permanova_df <- as.data.frame(
+        vegan::adonis2(bray_dist ~ group_simple, data = project_df, permutations = 999)
+      ) %>%
+        rownames_to_column("term")
+
+      permanova_df %>%
+        mutate(accession_number = unique(project_df$accession_number)) %>%
+        relocate(accession_number, .before = term)
+    }
+  )
+)
+
+beta_by_project
+```
+
+# Step 7: Run Per-BioProject Genus Mann-Whitney Tests on the Top-50 Table
+
+```{r}
+group2_top50_abundance_only <- group2_top50_df %>%
+  select(-Run, -group_simple, -psnp_size, -accession_number)
+
+genus_mann_whitney_by_project <- bind_rows(
+  lapply(
+    split(group2_top50_df, group2_top50_df$accession_number),
+    function(project_df) {
+      abundance_only <- project_df %>%
+        select(-Run, -group_simple, -psnp_size, -accession_number)
+
+      result_df <- bind_rows(
+        lapply(
+          colnames(abundance_only),
+          function(genus_name) {
+            test_df <- tibble(
+              group_simple = factor(project_df$group_simple, levels = c("control", "psnp")),
+              abundance = as.numeric(abundance_only[[genus_name]])
+            )
+
+            if (sum(test_df$group_simple == "control") > 0 && sum(test_df$group_simple == "psnp") > 0) {
+              test <- wilcox.test(abundance ~ group_simple, data = test_df, exact = FALSE)
+
+              tibble(
+                Genus = genus_name,
+                p_value = unname(test$p.value)
+              )
+            } else {
+              tibble(
+                Genus = genus_name,
+                p_value = NA_real_
+              )
+            }
+          }
+        )
+      ) %>%
+        mutate(
+          q_value = p.adjust(p_value, method = "BH"),
+          accession_number = unique(project_df$accession_number)
+        ) %>%
+        arrange(p_value)
+
+      result_df %>%
+        relocate(accession_number, .before = Genus)
+    }
+  )
+)
+
+genus_mann_whitney_by_project
+```
+
+# Step 8: Build the Selected-Genus Plot Tables Differentiated by BioProject Accession
+
+```{r}
+selected_genus_boxplot_data <- group2_top50_df %>%
+  select(Run, group_simple, accession_number, all_of(selected_genus_candidates$Genus)) %>%
+  pivot_longer(
+    cols = -c(Run, group_simple, accession_number),
+    names_to = "Genus",
+    values_to = "RelativeAbundance"
+  ) %>%
+  mutate(
+    RelativeAbundance = as.numeric(RelativeAbundance),
+    Condition = ifelse(group_simple == "psnp", "PS-NP", "Control"),
+    Condition = factor(Condition, levels = c("Control", "PS-NP")),
+    accession_number = factor(accession_number, levels = c("PRJNA944557", "PRJNA1357312")),
+    DisplayGenus = clean_taxon_label_followup(Genus)
+  ) %>%
+  left_join(
+    selected_genus_candidates %>%
+      select(Genus, DisplayGenus, p_value, q_value, selection_reason, test_type),
+    by = c("Genus", "DisplayGenus")
+  )
+
+selected_genus_order <- selected_genus_boxplot_data %>%
+  group_by(DisplayGenus) %>%
+  summarise(TotalAbundance = mean(RelativeAbundance, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(TotalAbundance)) %>%
+  pull(DisplayGenus)
+
+selected_genus_boxplot_data$DisplayGenus <- factor(
+  selected_genus_boxplot_data$DisplayGenus,
+  levels = selected_genus_order
+)
+
+selected_genus_barplot_data <- selected_genus_boxplot_data %>%
+  group_by(accession_number, Condition, DisplayGenus) %>%
+  summarise(
+    MeanRelativeAbundance = mean(RelativeAbundance, na.rm = TRUE),
+    p_value = dplyr::first(p_value),
+    q_value = dplyr::first(q_value),
+    selection_reason = dplyr::first(selection_reason),
+    test_type = dplyr::first(test_type),
+    .groups = "drop"
+  )
+
+selected_genus_stack_order <- selected_genus_barplot_data %>%
+  group_by(DisplayGenus) %>%
+  summarise(TotalAbundance = sum(MeanRelativeAbundance, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(TotalAbundance)) %>%
+  pull(DisplayGenus)
+
+selected_genus_barplot_data$DisplayGenus <- factor(
+  selected_genus_barplot_data$DisplayGenus,
+  levels = selected_genus_stack_order
+)
+
+selected_genus_palette <- build_shared_genus_palette_followup(levels(selected_genus_barplot_data$DisplayGenus))
+
+selected_genus_annotation <- selected_genus_boxplot_data %>%
+  group_by(accession_number, DisplayGenus) %>%
+  summarise(
+    p_value = dplyr::first(p_value),
+    q_value = dplyr::first(q_value),
+    label = dplyr::case_when(
+      q_value < 0.05 ~ "**",
+      p_value < 0.05 ~ "*",
+      TRUE ~ ""
+    ),
+    .groups = "drop"
+  )
+
+selected_genus_palette <- build_shared_genus_palette_followup(levels(selected_genus_barplot_data$DisplayGenus))
+```
+
+# Step 9: Make the Mean-Abundance Barplot Differentiated by BioProject Accession
+
+```{r group2_selected_genus_barplot_by_project, fig.width=13.5, fig.height=8.4}
+selected_genus_barplot_by_project <- ggplot(
+  selected_genus_barplot_data,
+  aes(x = Condition, y = MeanRelativeAbundance, fill = DisplayGenus)
+) +
+  geom_col(
+    position = position_stack(reverse = TRUE),
+    width = 0.55,
+    color = "white",
+    linewidth = 0.08
+  ) +
+  facet_grid2(cols = vars(accession_number)) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 0.1),
+    breaks = scales::breaks_pretty(n = 8),
+    expand = expansion(mult = c(0, 0.18))
+  ) +
+  scale_fill_manual(
+    values = selected_genus_palette,
+    breaks = rev(levels(selected_genus_barplot_data$DisplayGenus))
+  ) +
+  labs(
+    title = wrap_figure_title("Mean Relative Abundance of Candidate Genera Differing Between Control and PS-NP Samples in Group 2 Differentiated by BioProject Accession", width = 62),
+    x = "Condition",
+    y = "Mean Relative Abundance (%)",
+    fill = "Genus"
+  ) +
+  theme_classic(base_size = 15) +
+  theme(
+    plot.title = element_text(size = 18, hjust = 0.5, face = "plain", lineheight = 1.05, margin = margin(b = 12)),
+    axis.title = element_text(size = 15),
+    axis.text = element_text(size = 12, color = "black"),
+    strip.background = element_blank(),
+    strip.text = element_text(size = 13, face = "plain"),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 9.5, face = "italic"),
+    legend.position = "right",
+    legend.key.height = unit(0.3, "cm"),
+    legend.spacing.y = unit(0.06, "cm"),
+    plot.title.position = "plot"
+  )
+
+selected_genus_barplot_by_project <- finalize_thesis_plot(selected_genus_barplot_by_project, legend = "italic") +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(size = 15.5, face = "bold", colour = "black", margin = margin(b = 6)),
+    axis.title.y = element_text(size = 18.5, face = "bold", colour = "black"),
+    axis.text.x = element_text(size = 15.5, face = "bold", colour = "black")
+  )
+
+selected_genus_barplot_by_project
+```
+
+# Step 10: Save the Exploratory Outputs
+
+```{r}
+write.csv(
+  alpha_shapiro_by_project,
+  file.path(output_dir, "group2_exploratory_shapiro_by_project.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  alpha_mann_whitney_by_project,
+  file.path(output_dir, "group2_exploratory_alpha_mann_whitney_by_project.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  alpha_plot_data_by_project,
+  file.path(output_dir, "group2_exploratory_alpha_boxplot_data_by_project.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  beta_by_project,
+  file.path(output_dir, "group2_exploratory_permanova_by_project.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  genus_mann_whitney_by_project,
+  file.path(output_dir, "group2_exploratory_genus_mann_whitney_by_project_top50.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  selected_genus_boxplot_data,
+  file.path(output_dir, "group2_exploratory_selected_genus_boxplot_data_by_project.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  selected_genus_barplot_data,
+  file.path(output_dir, "group2_exploratory_selected_genus_barplot_data_by_project.csv"),
+  row.names = FALSE
+)
+
+ggsave(
+  file.path(output_dir, "group2_exploratory_shannon_boxplot_by_project.png"),
+  plot = group2_exploratory_shannon_boxplot,
+  width = 11.5,
+  height = 6.8,
+  dpi = 600
+)
+
+ggsave(
+  file.path(output_dir, "group2_exploratory_simpson_boxplot_by_project.png"),
+  plot = group2_exploratory_simpson_boxplot,
+  width = 11.5,
+  height = 6.8,
+  dpi = 600
+)
+
+ggsave(
+  file.path(output_dir, "group2_exploratory_selected_genus_barplot_by_project.png"),
+  plot = selected_genus_barplot_by_project,
+  width = 13.5,
+  height = 8.4,
+  dpi = 600
+)
+```
+
+This exploratory notebook keeps the main pooled Group 2 figures clean, while showing how the key top-50 candidate genera and core alpha/beta summaries behave when differentiated by BioProject accession.

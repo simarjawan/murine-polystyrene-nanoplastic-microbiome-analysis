@@ -1,0 +1,32 @@
+.DS_Store
+.Rhistory
+.RData
+.Rproj.user/
+*.html
+*.png
+*.jpg
+*.jpeg
+*.tiff
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.txt
+*.log
+
+# Generated output directories
+Combined Supplementary Outputs/
+Group_1_outputs/
+Group 2 Outputs/
+Group 3 Outputs/
+Group 4 Outputs/
+
+# Keep source files in these folders, ignore everything else by default
+Group 2 Exploratory Outputs/*
+!Group 2 Exploratory Outputs/*.Rmd
+
+Top30 Sensitivity Outputs/*
+!Top30 Sensitivity Outputs/*.Rmd
+
+LEfSe LDA 1 Top50/*
+!LEfSe LDA 1 Top50/*.Rmd

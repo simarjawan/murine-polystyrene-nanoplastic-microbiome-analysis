@@ -1,0 +1,182 @@
+---
+title: "Group 2 LEfSe Exploratory Analysis (LDA = 1)"
+author: "Simar Jawanda"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  dev = "png",
+  fig.ext = "png",
+  dpi = 300
+)
+```
+
+# Step 1: Load Packages
+
+```{r}
+Sys.setenv(
+  PATH = paste("/opt/homebrew/bin", Sys.getenv("PATH"), sep = ":"),
+  FC = "/opt/homebrew/bin/gfortran",
+  F77 = "/opt/homebrew/bin/gfortran",
+  F90 = "/opt/homebrew/bin/gfortran"
+)
+
+library(lefser)
+library(SummarizedExperiment)
+library(dplyr)
+```
+
+# Step 2: Read the Saved Top-50 Filtered Table
+
+```{r}
+genus_merged_df <- read.csv(
+  "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 2 Outputs/pca_top50/group2_genus_filtered_top50_for_downstream.csv",
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+dim(genus_merged_df)
+```
+
+# Step 3: Prepare the Top-50 Genus Matrix
+
+```{r}
+genus_abundance_only <- genus_merged_df %>%
+  select(-Run, -group_simple, -psnp_size, -accession_number)
+
+dim(genus_abundance_only)
+```
+
+# Step 4: Prepare LEfSe Input
+
+```{r}
+lefse_meta <- genus_merged_df %>%
+  select(Run, group_simple, accession_number) %>%
+  mutate(
+    group_simple = factor(trimws(tolower(group_simple)), levels = c("control", "psnp")),
+    accession_number = factor(accession_number, levels = c("PRJNA944557", "PRJNA1357312"))
+  ) %>%
+  filter(group_simple %in% c("control", "psnp"))
+
+lefse_genus <- genus_abundance_only[
+  match(lefse_meta$Run, genus_merged_df$Run),
+  ,
+  drop = FALSE
+]
+
+lefse_matrix <- t(as.matrix(lefse_genus))
+mode(lefse_matrix) <- "numeric"
+
+lefse_input <- SummarizedExperiment(
+  assays = list(relative_abundance = lefse_matrix),
+  colData = S4Vectors::DataFrame(lefse_meta)
+)
+
+dim(lefse_matrix)
+table(lefse_meta$group_simple, lefse_meta$accession_number)
+```
+
+# Step 5: Run LEfSe with LDA = 1
+
+```{r}
+group2_lefse_lda1 <- lefser(
+  lefse_input,
+  classCol = "group_simple",
+  subclassCol = "accession_number",
+  assay = "relative_abundance",
+  lda.threshold = 1,
+  method = "none",
+  trim.names = FALSE
+)
+
+group2_lefse_lda1 <- as.data.frame(group2_lefse_lda1)
+
+if (nrow(group2_lefse_lda1) > 0) {
+  colnames(group2_lefse_lda1) <- c("Genus", "LDA_score")
+  group2_lefse_lda1 <- group2_lefse_lda1 %>%
+    arrange(desc(LDA_score))
+} else {
+  group2_lefse_lda1 <- data.frame(
+    Genus = character(),
+    LDA_score = numeric()
+  )
+}
+
+group2_lefse_lda1
+```
+
+# Step 6: Read the Current Top-50 Genus Results
+
+```{r}
+current_unadjusted_df <- read.csv(
+  "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 2 Outputs/pca_top50/group2_genus_level_mann_whitney_fdr_results_top50.csv",
+  stringsAsFactors = FALSE
+)
+
+current_stratified_df <- read.csv(
+  "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 2 Outputs/pca_top50/group2_genus_level_stratified_wilcoxon_fdr_results_top50.csv",
+  stringsAsFactors = FALSE
+)
+
+dim(current_unadjusted_df)
+dim(current_stratified_df)
+```
+
+# Step 7: Compare LEfSe with the Current Top-50 Results
+
+```{r}
+group2_lefse_lda1_compare_unadjusted <- current_unadjusted_df %>%
+  mutate(
+    Genus = as.character(Genus),
+    Found_by_LEfSe_LDA1 = Genus %in% group2_lefse_lda1$Genus,
+    LEfSe_LDA1_score = group2_lefse_lda1$LDA_score[match(Genus, group2_lefse_lda1$Genus)],
+    FDR_significant = q_value < 0.05
+  ) %>%
+  arrange(p_value)
+
+group2_lefse_lda1_compare_stratified <- current_stratified_df %>%
+  mutate(
+    Genus = as.character(Genus),
+    Found_by_LEfSe_LDA1 = Genus %in% group2_lefse_lda1$Genus,
+    LEfSe_LDA1_score = group2_lefse_lda1$LDA_score[match(Genus, group2_lefse_lda1$Genus)],
+    FDR_significant = q_value < 0.05
+  ) %>%
+  arrange(p_value)
+
+head(group2_lefse_lda1_compare_unadjusted, 20)
+head(group2_lefse_lda1_compare_stratified, 20)
+```
+
+# Step 8: Save Top-50 LDA = 1 LEfSe Outputs
+
+```{r}
+lefse_output_dir <- "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/LEfSe LDA 1 Top50/Group_2"
+dir.create(lefse_output_dir, recursive = TRUE, showWarnings = FALSE)
+
+write.csv(
+  group2_lefse_lda1,
+  file.path(lefse_output_dir, "group2_lefse_results_LDA1_top50.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  group2_lefse_lda1_compare_unadjusted,
+  file.path(lefse_output_dir, "group2_lefse_vs_mann_whitney_top50_comparison_LDA1.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  group2_lefse_lda1_compare_stratified,
+  file.path(lefse_output_dir, "group2_lefse_vs_stratified_wilcoxon_top50_comparison_LDA1.csv"),
+  row.names = FALSE
+)
+
+list.files(lefse_output_dir, pattern = "LDA1", full.names = FALSE)
+```
+
+This exploratory notebook checks whether lowering the LEfSe LDA threshold from 2 to 1 reveals any biomarkers in the finalized Group 2 top-50 subclass-aware workflow and saves the labeled outputs separately from the main analysis.

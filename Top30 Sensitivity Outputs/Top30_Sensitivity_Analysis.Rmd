@@ -1,0 +1,375 @@
+---
+title: "Top-30 Sensitivity Analysis Across Groups 1-4"
+author: "Simar Jawanda"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  dev = "png",
+  fig.ext = "png",
+  dpi = 300
+)
+```
+
+# Step 1: Load Packages
+
+```{r}
+Sys.setenv(
+  PATH = paste("/opt/homebrew/bin", Sys.getenv("PATH"), sep = ":"),
+  FC = "/opt/homebrew/bin/gfortran",
+  F77 = "/opt/homebrew/bin/gfortran",
+  F90 = "/opt/homebrew/bin/gfortran"
+)
+
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(coin)
+library(lefser)
+library(SummarizedExperiment)
+```
+
+# Step 2: Define Helper Functions
+
+```{r}
+run_genus_pca <- function(genus_merged_df, metadata_cols, top_n = 30) {
+  genus_abundance_only <- genus_merged_df %>%
+    select(-all_of(metadata_cols)) %>%
+    mutate(across(everything(), as.numeric))
+
+  keep_genus <- vapply(
+    genus_abundance_only,
+    function(values) {
+      sum(!is.na(values)) > 1 && sd(values, na.rm = TRUE) > 0
+    },
+    logical(1)
+  )
+
+  genus_abundance_filtered <- genus_abundance_only[, keep_genus, drop = FALSE]
+
+  pca_obj <- prcomp(genus_abundance_filtered, center = TRUE, scale. = TRUE)
+
+  variance_explained <- (pca_obj$sdev^2) / sum(pca_obj$sdev^2)
+  variance_df <- tibble(
+    PC = paste0("PC", seq_along(variance_explained)),
+    variance_explained = variance_explained,
+    cumulative_variance = cumsum(variance_explained)
+  )
+
+  loading_pc_count <- min(5, ncol(pca_obj$rotation))
+  loading_weights <- variance_explained[seq_len(loading_pc_count)]
+  loadings_matrix <- pca_obj$rotation[, seq_len(loading_pc_count), drop = FALSE]
+  weighted_loading <- rowSums(abs(sweep(loadings_matrix, 2, loading_weights, `*`)))
+
+  loadings_df <- as.data.frame(loadings_matrix) %>%
+    rownames_to_column("Genus") %>%
+    mutate(weighted_loading = weighted_loading[Genus]) %>%
+    arrange(desc(weighted_loading))
+
+  top_genera_df <- loadings_df %>%
+    slice_head(n = min(top_n, nrow(loadings_df)))
+
+  filtered_table <- genus_merged_df %>%
+    select(all_of(metadata_cols), all_of(top_genera_df$Genus))
+
+  list(
+    variance_df = variance_df,
+    loadings_df = loadings_df,
+    top_genera_df = top_genera_df,
+    filtered_table = filtered_table
+  )
+}
+
+run_mann_whitney_results <- function(filtered_df) {
+  abundance_only <- filtered_df %>%
+    select(-Run, -group_simple, -psnp_size, -accession_number)
+
+  results_raw <- bind_rows(
+    lapply(
+      colnames(abundance_only),
+      function(genus_name) {
+        test_df <- tibble(
+          group_simple = factor(filtered_df$group_simple, levels = c("control", "psnp")),
+          abundance = as.numeric(abundance_only[[genus_name]])
+        )
+
+        test <- wilcox.test(abundance ~ group_simple, data = test_df, exact = FALSE)
+
+        tibble(
+          Genus = genus_name,
+          p_value = unname(test$p.value)
+        )
+      }
+    )
+  ) %>%
+    arrange(p_value)
+
+  results_fdr <- results_raw %>%
+    mutate(q_value = p.adjust(p_value, method = "BH"))
+
+  list(raw = results_raw, fdr = results_fdr)
+}
+
+run_stratified_results <- function(filtered_df) {
+  abundance_only <- filtered_df %>%
+    select(-Run, -group_simple, -psnp_size, -accession_number)
+
+  results_raw <- bind_rows(
+    lapply(
+      colnames(abundance_only),
+      function(genus_name) {
+        test_df <- tibble(
+          accession_number = factor(filtered_df$accession_number, levels = c("PRJNA944557", "PRJNA1357312")),
+          group_simple = factor(filtered_df$group_simple, levels = c("control", "psnp")),
+          abundance = as.numeric(abundance_only[[genus_name]])
+        )
+
+        stratified_test <- coin::wilcox_test(
+          abundance ~ group_simple | accession_number,
+          data = test_df,
+          distribution = "asymptotic"
+        )
+
+        tibble(
+          Genus = genus_name,
+          p_value = as.numeric(coin::pvalue(stratified_test))
+        )
+      }
+    )
+  ) %>%
+    arrange(p_value)
+
+  results_fdr <- results_raw %>%
+    mutate(q_value = p.adjust(p_value, method = "BH"))
+
+  list(raw = results_raw, fdr = results_fdr)
+}
+
+run_lefse_results <- function(filtered_df, lda_threshold = 2, use_subclass = FALSE) {
+  lefse_meta <- filtered_df %>%
+    select(Run, group_simple, accession_number) %>%
+    mutate(
+      group_simple = factor(trimws(tolower(group_simple)), levels = c("control", "psnp")),
+      accession_number = factor(accession_number, levels = c("PRJNA944557", "PRJNA1357312"))
+    )
+
+  lefse_genus <- filtered_df %>%
+    select(-Run, -group_simple, -psnp_size, -accession_number)
+
+  lefse_matrix <- t(as.matrix(lefse_genus))
+  mode(lefse_matrix) <- "numeric"
+
+  lefse_input <- SummarizedExperiment(
+    assays = list(relative_abundance = lefse_matrix),
+    colData = S4Vectors::DataFrame(lefse_meta)
+  )
+
+  if (use_subclass) {
+    lefse_df <- lefser(
+      lefse_input,
+      classCol = "group_simple",
+      subclassCol = "accession_number",
+      assay = "relative_abundance",
+      lda.threshold = lda_threshold,
+      method = "none",
+      trim.names = FALSE
+    )
+  } else {
+    lefse_df <- lefser(
+      lefse_input,
+      classCol = "group_simple",
+      assay = "relative_abundance",
+      lda.threshold = lda_threshold,
+      method = "none",
+      trim.names = FALSE
+    )
+  }
+
+  lefse_df <- as.data.frame(lefse_df)
+
+  if (nrow(lefse_df) > 0) {
+    colnames(lefse_df) <- c("Genus", "LDA_score")
+    lefse_df <- lefse_df %>%
+      arrange(desc(LDA_score))
+  } else {
+    lefse_df <- tibble(
+      Genus = character(),
+      LDA_score = numeric()
+    )
+  }
+
+  lefse_df
+}
+```
+
+# Step 3: Define Group Paths
+
+```{r}
+output_root <- "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Top30 Sensitivity Outputs"
+dir.create(output_root, recursive = TRUE, showWarnings = FALSE)
+
+group_specs <- list(
+  list(
+    label = "Group 1",
+    short = "group1",
+    metadata_csv = "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group_1_outputs/group1_analysis_metadata.csv",
+    genus_tsv = "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_1_PRJNA1209429/exported-genus-relfreq/genus-relfreq.tsv",
+    output_dir = file.path(output_root, "Group_1"),
+    use_subclass = FALSE
+  ),
+  list(
+    label = "Group 2",
+    short = "group2",
+    metadata_csv = "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 2 Outputs/group2_analysis_metadata.csv",
+    genus_tsv = "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group 2/exported-genus-relfreq/genus-relfreq.tsv",
+    output_dir = file.path(output_root, "Group_2"),
+    use_subclass = TRUE
+  ),
+  list(
+    label = "Group 3",
+    short = "group3",
+    metadata_csv = "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 3 Outputs/group3_analysis_metadata.csv",
+    genus_tsv = "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group_3_PRJNA831840/exported-genus-relfreq/genus-relfreq.tsv",
+    output_dir = file.path(output_root, "Group_3"),
+    use_subclass = FALSE
+  ),
+  list(
+    label = "Group 4",
+    short = "group4",
+    metadata_csv = "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 4 Outputs/group4_analysis_metadata.csv",
+    genus_tsv = "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/QIIME2 DATA/Group 4_PRJNA1060792/exported-genus-relfreq/genus-relfreq.tsv",
+    output_dir = file.path(output_root, "Group_4"),
+    use_subclass = FALSE
+  )
+)
+```
+
+# Step 4: Run the Top-30 Sensitivity Workflow
+
+```{r}
+top30_summary_df <- bind_rows(
+  lapply(
+    group_specs,
+    function(spec) {
+      dir.create(spec$output_dir, recursive = TRUE, showWarnings = FALSE)
+
+      metadata_df <- read.csv(spec$metadata_csv, stringsAsFactors = FALSE)
+      genus_df <- read.delim(spec$genus_tsv, check.names = FALSE, skip = 1)
+
+      rownames(genus_df) <- genus_df[[1]]
+      genus_df <- genus_df[, -1, drop = FALSE]
+
+      genus_matrix_t <- as.data.frame(t(genus_df))
+      genus_matrix_t$Run <- rownames(genus_matrix_t)
+      rownames(genus_matrix_t) <- NULL
+
+      genus_merged_df <- metadata_df %>%
+        inner_join(genus_matrix_t, by = "Run")
+
+      metadata_cols <- c("Run", "group_simple", "psnp_size", "accession_number")
+      pca_res <- run_genus_pca(genus_merged_df, metadata_cols, top_n = 30)
+
+      mann_whitney_res <- run_mann_whitney_results(pca_res$filtered_table)
+
+      write.csv(pca_res$variance_df, file.path(spec$output_dir, paste0(spec$short, "_pca_variance_explained_top30.csv")), row.names = FALSE)
+      write.csv(pca_res$loadings_df, file.path(spec$output_dir, paste0(spec$short, "_pca_genus_loadings_top30.csv")), row.names = FALSE)
+      write.csv(pca_res$top_genera_df, file.path(spec$output_dir, paste0(spec$short, "_pca_top30_genera.csv")), row.names = FALSE)
+      write.csv(pca_res$filtered_table, file.path(spec$output_dir, paste0(spec$short, "_genus_filtered_top30_for_sensitivity.csv")), row.names = FALSE)
+      write.csv(mann_whitney_res$raw, file.path(spec$output_dir, paste0(spec$short, "_genus_level_mann_whitney_raw_p_values_top30.csv")), row.names = FALSE)
+      write.csv(mann_whitney_res$fdr, file.path(spec$output_dir, paste0(spec$short, "_genus_level_mann_whitney_fdr_results_top30.csv")), row.names = FALSE)
+
+      lefse_lda1_df <- run_lefse_results(pca_res$filtered_table, lda_threshold = 1, use_subclass = spec$use_subclass)
+      lefse_lda2_df <- run_lefse_results(pca_res$filtered_table, lda_threshold = 2, use_subclass = spec$use_subclass)
+
+      write.csv(lefse_lda1_df, file.path(spec$output_dir, paste0(spec$short, "_lefse_results_LDA1_top30.csv")), row.names = FALSE)
+      write.csv(lefse_lda2_df, file.path(spec$output_dir, paste0(spec$short, "_lefse_results_LDA2_top30.csv")), row.names = FALSE)
+
+      lefse_compare_lda1 <- mann_whitney_res$fdr %>%
+        mutate(
+          Found_by_LEfSe_LDA1 = Genus %in% lefse_lda1_df$Genus,
+          LEfSe_LDA1_score = lefse_lda1_df$LDA_score[match(Genus, lefse_lda1_df$Genus)],
+          FDR_significant = q_value < 0.05
+        ) %>%
+        arrange(p_value)
+
+      lefse_compare_lda2 <- mann_whitney_res$fdr %>%
+        mutate(
+          Found_by_LEfSe_LDA2 = Genus %in% lefse_lda2_df$Genus,
+          LEfSe_LDA2_score = lefse_lda2_df$LDA_score[match(Genus, lefse_lda2_df$Genus)],
+          FDR_significant = q_value < 0.05
+        ) %>%
+        arrange(p_value)
+
+      write.csv(lefse_compare_lda1, file.path(spec$output_dir, paste0(spec$short, "_lefse_vs_mann_whitney_top30_comparison_LDA1.csv")), row.names = FALSE)
+      write.csv(lefse_compare_lda2, file.path(spec$output_dir, paste0(spec$short, "_lefse_vs_mann_whitney_top30_comparison_LDA2.csv")), row.names = FALSE)
+
+      if (spec$use_subclass) {
+        stratified_res <- run_stratified_results(pca_res$filtered_table)
+
+        write.csv(stratified_res$raw, file.path(spec$output_dir, paste0(spec$short, "_genus_level_stratified_wilcoxon_raw_p_values_top30.csv")), row.names = FALSE)
+        write.csv(stratified_res$fdr, file.path(spec$output_dir, paste0(spec$short, "_genus_level_stratified_wilcoxon_fdr_results_top30.csv")), row.names = FALSE)
+
+        strat_compare_lda1 <- stratified_res$fdr %>%
+          mutate(
+            Found_by_LEfSe_LDA1 = Genus %in% lefse_lda1_df$Genus,
+            LEfSe_LDA1_score = lefse_lda1_df$LDA_score[match(Genus, lefse_lda1_df$Genus)],
+            FDR_significant = q_value < 0.05
+          ) %>%
+          arrange(p_value)
+
+        strat_compare_lda2 <- stratified_res$fdr %>%
+          mutate(
+            Found_by_LEfSe_LDA2 = Genus %in% lefse_lda2_df$Genus,
+            LEfSe_LDA2_score = lefse_lda2_df$LDA_score[match(Genus, lefse_lda2_df$Genus)],
+            FDR_significant = q_value < 0.05
+          ) %>%
+          arrange(p_value)
+
+        write.csv(strat_compare_lda1, file.path(spec$output_dir, paste0(spec$short, "_lefse_vs_stratified_wilcoxon_top30_comparison_LDA1.csv")), row.names = FALSE)
+        write.csv(strat_compare_lda2, file.path(spec$output_dir, paste0(spec$short, "_lefse_vs_stratified_wilcoxon_top30_comparison_LDA2.csv")), row.names = FALSE)
+
+        tibble(
+          Group = spec$label,
+          tested_genera = nrow(mann_whitney_res$fdr),
+          raw_significant_unadjusted = sum(mann_whitney_res$fdr$p_value < 0.05, na.rm = TRUE),
+          fdr_significant_unadjusted = sum(mann_whitney_res$fdr$q_value < 0.05, na.rm = TRUE),
+          raw_significant_stratified = sum(stratified_res$fdr$p_value < 0.05, na.rm = TRUE),
+          fdr_significant_stratified = sum(stratified_res$fdr$q_value < 0.05, na.rm = TRUE),
+          lefse_hits_lda1 = nrow(lefse_lda1_df),
+          lefse_hits_lda2 = nrow(lefse_lda2_df)
+        )
+      } else {
+        tibble(
+          Group = spec$label,
+          tested_genera = nrow(mann_whitney_res$fdr),
+          raw_significant_unadjusted = sum(mann_whitney_res$fdr$p_value < 0.05, na.rm = TRUE),
+          fdr_significant_unadjusted = sum(mann_whitney_res$fdr$q_value < 0.05, na.rm = TRUE),
+          raw_significant_stratified = NA_integer_,
+          fdr_significant_stratified = NA_integer_,
+          lefse_hits_lda1 = nrow(lefse_lda1_df),
+          lefse_hits_lda2 = nrow(lefse_lda2_df)
+        )
+      }
+    }
+  )
+)
+
+top30_summary_df
+```
+
+# Step 5: Save the Top-30 Summary
+
+```{r}
+write.csv(
+  top30_summary_df,
+  file.path(output_root, "top30_summary_by_group.csv"),
+  row.names = FALSE
+)
+```
+
+This separate notebook keeps the top-30 workflow independent from the main analysis so it can be used as a sensitivity check when explaining why the final thesis uses the top-50 genus threshold.

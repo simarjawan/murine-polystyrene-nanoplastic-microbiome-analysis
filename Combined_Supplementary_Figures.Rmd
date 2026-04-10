@@ -1,0 +1,766 @@
+---
+title: "Combined Supplementary Figures"
+author: "Simar Jawanda"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  out.width = "100%",
+  dev = "png",
+  fig.ext = "png",
+  dpi = 300
+)
+```
+
+# Step 1: Install and Load Packages
+
+```{r}
+required_packages <- c(
+  "dplyr",
+  "ggh4x",
+  "ggplot2",
+  "scales",
+  "readr"
+)
+
+missing_packages <- required_packages[!required_packages %in% rownames(installed.packages())]
+
+if (length(missing_packages) > 0) {
+  install.packages(missing_packages)
+}
+
+library(dplyr)
+library(ggh4x)
+library(ggplot2)
+library(scales)
+library(readr)
+
+wrap_figure_title <- function(title_text, width = 62) {
+  paste(strwrap(title_text, width = width), collapse = "\n")
+}
+
+finalize_thesis_plot <- function(plot, legend = c("none", "plain", "italic")) {
+  legend <- match.arg(legend)
+
+  if (!is.null(plot$labels$x) && identical(plot$labels$x, "Condition")) {
+    plot <- plot + labs(x = NULL)
+  }
+
+  plot <- plot +
+    labs(title = NULL) +
+    theme(
+      plot.title = element_blank(),
+      plot.title.position = "panel",
+      axis.line = element_line(linewidth = 1.1, colour = "black"),
+      axis.ticks = element_line(linewidth = 0.95, colour = "black"),
+      axis.ticks.length = grid::unit(0.18, "cm"),
+      axis.title.x = element_text(size = 20, face = "bold", colour = "black"),
+      axis.title.y = element_text(size = 20, face = "bold", colour = "black"),
+      axis.text.x = element_text(size = 17, face = "bold", colour = "black"),
+      axis.text.y = element_text(size = 17, face = "bold", colour = "black"),
+      strip.background = element_rect(fill = "white", colour = "black", linewidth = 1.1),
+      strip.text = element_text(size = 18.5, face = "bold", colour = "black")
+    )
+
+  if (legend != "none") {
+    plot <- plot +
+      guides(
+        fill = guide_legend(ncol = 1, byrow = TRUE),
+        colour = guide_legend(ncol = 1, byrow = TRUE),
+        shape = guide_legend(ncol = 1, byrow = TRUE)
+      ) +
+      theme(
+        legend.title = element_text(size = 22, face = "bold"),
+        legend.text = element_text(size = 18.5, face = ifelse(legend == "italic", "italic", "plain")),
+        legend.key.width = grid::unit(0.76, "cm"),
+        legend.key.height = grid::unit(0.84, "cm"),
+        legend.spacing.y = grid::unit(0.18, "cm"),
+        legend.box = "vertical"
+      )
+  }
+
+  plot
+}
+
+make_panel_label_map <- function(labels) {
+  panel_labels <- paste0(LETTERS[seq_along(labels)], ". ", labels)
+  stats::setNames(panel_labels, labels)
+}
+
+build_two_group_brackets <- function(data, facet_col, value_col, label_col) {
+  data %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(facet_col))) %>%
+    dplyr::summarise(
+      bracket_y = max(.data[[value_col]], na.rm = TRUE) * 1.20 + 1e-06,
+      label = dplyr::first(.data[[label_col]]),
+      .groups = "drop"
+    ) %>%
+    dplyr::filter(!is.na(label), label != "") %>%
+    dplyr::mutate(
+      x_start = 1,
+      x_end = 2,
+      x_mid = 1.5,
+      tick_drop = pmax(bracket_y * 0.04, 1e-06),
+      label_y = bracket_y + pmax(bracket_y * 0.055, 1e-06)
+    )
+}
+
+add_two_group_brackets <- function(plot, bracket_df, text_size = 6) {
+  if (nrow(bracket_df) == 0) {
+    return(plot)
+  }
+
+  plot +
+    geom_segment(
+      data = bracket_df,
+      aes(x = x_start, xend = x_end, y = bracket_y, yend = bracket_y),
+      inherit.aes = FALSE,
+      linewidth = 0.9
+    ) +
+    geom_segment(
+      data = bracket_df,
+      aes(x = x_start, xend = x_start, y = bracket_y, yend = bracket_y - tick_drop),
+      inherit.aes = FALSE,
+      linewidth = 0.9
+    ) +
+    geom_segment(
+      data = bracket_df,
+      aes(x = x_end, xend = x_end, y = bracket_y, yend = bracket_y - tick_drop),
+      inherit.aes = FALSE,
+      linewidth = 0.9
+    ) +
+    geom_text(
+      data = bracket_df,
+      aes(x = x_mid, y = label_y, label = label),
+      inherit.aes = FALSE,
+      size = text_size,
+      fontface = "bold"
+    )
+}
+
+
+deterministic_extra_colors <- function(labels, chroma = 55, luminance = 70) {
+  colors <- vapply(labels, function(lbl) {
+    ints <- utf8ToInt(enc2utf8(lbl))
+    hue <- sum(ints * seq_along(ints)) %% 360
+    grDevices::hcl(h = hue, c = chroma, l = luminance)
+  }, character(1))
+  stats::setNames(colors, labels)
+}
+
+build_shared_genus_palette_composition <- function(genus_names) {
+  genus_palette <- c(
+    "Lactobacillus" = "#8ECFC9",
+    "Muribaculaceae" = "#F3C78D",
+    "Streptococcus" = "#A8B6D9",
+    "Turicibacter" = "#E8A0A6",
+    "Faecalibaculum" = "#A9CFA5",
+    "Odoribacter" = "#DCC7A1",
+    "Bifidobacterium" = "#C8B6D8",
+    "Rikenellaceae RC9 gut group" = "#E7B8D6",
+    "Alistipes" = "#90B4C6",
+    "Helicobacter" = "#D8A48F",
+    "Akkermansia" = "#B7A0D8",
+    "Bacteroides" = "#8FBE6D",
+    "Clostridia UCG-014" = "#B48A8A",
+    "Clostridium sensu stricto 1" = "#BFB6B0",
+    "Lachnospiraceae NK4A136 group" = "#5B84B1",
+    "Muribaculum" = "#9E9D68",
+    "Candidatus Saccharimonas" = "#6F8FB4",
+    "Desulfovibrio" = "#A77C95",
+    "Dubosiella" = "#8AA24A",
+    "Uncultured (Lachnospiraceae)" = "#9FB6C8",
+    "Uncultured (Ruminococcaceae)" = "#AFC1D8",
+    "Uncultured (Oscillospiraceae)" = "#8AAFD0",
+    "Incertae Sedis (Ruminococcaceae)" = "#5FAE8D",
+    "Unclassified (Lachnospiraceae)" = "#D5B3C6",
+    "Unclassified (Clostridia)" = "#CFA4BF",
+    "Unclassified (Erysipelatoclostridiaceae)" = "#DAB7C5",
+    "Unassigned (Lachnospiraceae)" = "#E0B180",
+    "Uncultured" = "#C7CEDB",
+    "Unassigned" = "#C892A6",
+    "Unassigned (taxonomy unavailable)" = "#C892A6",
+    "Unclassified" = "#A9C8E8",
+    "Other" = "#A6A6A6"
+  )
+
+  missing_genera <- setdiff(genus_names, names(genus_palette))
+
+  if (length(missing_genera) > 0) {
+    extra_cols <- deterministic_extra_colors(missing_genera)
+    genus_palette <- c(genus_palette, extra_cols)
+  }
+
+  genus_palette
+}
+
+build_shared_genus_palette_followup <- function(genus_names) {
+  genus_palette <- c(
+    "Lactobacillus" = "#8ECFC9",
+    "Muribaculaceae" = "#F3C78D",
+    "Streptococcus" = "#A8B6D9",
+    "Turicibacter" = "#E8A0A6",
+    "Faecalibaculum" = "#A9CFA5",
+    "Odoribacter" = "#DCC7A1",
+    "Bifidobacterium" = "#C8B6D8",
+    "Rikenellaceae RC9 gut group" = "#E7B8D6",
+    "Alistipes" = "#90B4C6",
+    "Helicobacter" = "#D8A48F",
+    "Akkermansia" = "#B7A0D8",
+    "Bacteroides" = "#8FBE6D",
+    "Clostridia UCG-014" = "#B48A8A",
+    "Clostridium sensu stricto 1" = "#8D6CCF",
+    "Lachnospiraceae NK4A136 group" = "#5B84B1",
+    "Muribaculum" = "#9E9D68",
+    "Candidatus Saccharimonas" = "#6F8FB4",
+    "Desulfovibrio" = "#A77C95",
+    "Dubosiella" = "#8AA24A",
+    "Enterobacter" = "#E76F51",
+    "Blautia" = "#1F78B4",
+    "Klebsiella" = "#F39C12",
+    "Parasutterella" = "#2F9C95",
+    "Candidatus Arthromitus" = "#8E44AD",
+    "Incertae Sedis" = "#5FAE8D",
+    "Incertae Sedis (Ruminococcaceae)" = "#5FAE8D",
+    "RF39" = "#4A90D9",
+    "Rikenella" = "#A26CC5",
+    "Prevotellaceae UCG-001" = "#2E8B57",
+    "[Clostridium] innocuum group" = "#CC8456",
+    "Lachnospiraceae UCG-001" = "#5B89C9",
+    "[Eubacterium] ventriosum group" = "#C46A93",
+    "Uncultured" = "#7BAFD4",
+    "Uncultured (Lachnospiraceae)" = "#9FB6C8",
+    "Uncultured (Ruminococcaceae)" = "#AFC1D8",
+    "Uncultured (Oscillospiraceae)" = "#8AAFD0",
+    "Unassigned" = "#C892A6",
+    "Unassigned (taxonomy unavailable)" = "#C892A6",
+    "Unassigned (Lachnospiraceae)" = "#E0B180",
+    "Unclassified" = "#C88EBE",
+    "Unclassified (Lachnospiraceae)" = "#D5B3C6",
+    "Unclassified (Clostridia)" = "#CFA4BF",
+    "Unclassified (Erysipelatoclostridiaceae)" = "#DAB7C5"
+  )
+
+  uncultured_labels <- genus_names[grepl("^Uncultured \\(", genus_names)]
+  taxonomy_unavailable_labels <- genus_names[genus_names == "Unassigned (taxonomy unavailable)"]
+  unclassified_labels <- genus_names[grepl("^Unclassified \\(", genus_names)]
+  incertae_labels <- genus_names[grepl("^Incertae Sedis \\(", genus_names)]
+
+  if (length(uncultured_labels) > 0) genus_palette[uncultured_labels] <- "#7BAFD4"
+  if (length(taxonomy_unavailable_labels) > 0) genus_palette[taxonomy_unavailable_labels] <- "#C892A6"
+  if (length(unclassified_labels) > 0) genus_palette[unclassified_labels] <- "#C88EBE"
+  if (length(incertae_labels) > 0) genus_palette[incertae_labels] <- "#5FAE8D"
+
+  missing_genera <- setdiff(genus_names, names(genus_palette))
+
+  if (length(missing_genera) > 0) {
+    extra_cols <- deterministic_extra_colors(missing_genera)
+    genus_palette <- c(genus_palette, extra_cols)
+  }
+
+  genus_palette
+}
+```
+
+# Step 2: Define Combined Supplementary Output Folder
+
+```{r}
+combined_output_dir <- "/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Combined Supplementary Outputs"
+
+if (!dir.exists(combined_output_dir)) {
+  dir.create(combined_output_dir, recursive = TRUE)
+}
+```
+
+# Step 3: Read Saved Alpha-Diversity Outputs from Groups 1-4
+
+```{r}
+group1_alpha <- read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group_1_outputs/group1_alpha_diversity_with_metadata.csv")
+group2_alpha <- read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 2 Outputs/group2_alpha_diversity_with_metadata.csv")
+group3_alpha <- read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 3 Outputs/group3_alpha_diversity_with_metadata.csv")
+group4_alpha <- read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 4 Outputs/group4_alpha_diversity_with_metadata.csv")
+```
+
+# Step 4: Combine Alpha-Diversity Tables
+
+```{r}
+combined_alpha <- bind_rows(
+  group1_alpha %>% mutate(Group = "Group 1"),
+  group2_alpha %>% mutate(Group = "Group 2"),
+  group3_alpha %>% mutate(Group = "Group 3"),
+  group4_alpha %>% mutate(Group = "Group 4")
+) %>%
+  mutate(
+    Condition = ifelse(group_simple == "psnp", "PS-NP", "Control"),
+    Condition = factor(Condition, levels = c("Control", "PS-NP")),
+    Group = factor(Group, levels = c("Group 1", "Group 2", "Group 3", "Group 4"))
+  )
+
+head(combined_alpha)
+table(combined_alpha$Group, combined_alpha$Condition)
+
+combined_shannon_stats <- bind_rows(
+  read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group_1_outputs/group1_mann_whitney_shannon.csv") %>% mutate(Group = "Group 1"),
+  read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 2 Outputs/group2_mann_whitney_shannon.csv") %>% mutate(Group = "Group 2"),
+  read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 3 Outputs/group3_mann_whitney_shannon.csv") %>% mutate(Group = "Group 3"),
+  read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 4 Outputs/group4_mann_whitney_shannon.csv") %>% mutate(Group = "Group 4")
+) %>%
+  transmute(Group = factor(Group, levels = c("Group 1", "Group 2", "Group 3", "Group 4")), x = 1.5, label = ifelse(p.value < 0.05, "*", ""))
+
+combined_simpson_stats <- bind_rows(
+  read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group_1_outputs/group1_mann_whitney_simpson.csv") %>% mutate(Group = "Group 1"),
+  read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 2 Outputs/group2_mann_whitney_simpson.csv") %>% mutate(Group = "Group 2"),
+  read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 3 Outputs/group3_mann_whitney_simpson.csv") %>% mutate(Group = "Group 3"),
+  read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 4 Outputs/group4_mann_whitney_simpson.csv") %>% mutate(Group = "Group 4")
+) %>%
+  transmute(Group = factor(Group, levels = c("Group 1", "Group 2", "Group 3", "Group 4")), x = 1.5, label = ifelse(p.value < 0.05, "*", ""))
+```
+
+# Step 5: Combined Shannon Plot
+
+```{r combined_shannon_plot, fig.width=15.5, fig.height=8.2}
+combined_shannon_plot <- ggplot(combined_alpha, aes(x = Condition, y = Shannon, fill = Condition)) +
+  stat_boxplot(
+    geom = "errorbar",
+    width = 0.18,
+    linewidth = 0.8,
+    coef = 1.5
+  ) +
+  geom_boxplot(
+    outlier.shape = NA,
+    width = 0.5,
+    color = "black",
+    linewidth = 0.8,
+    coef = 1.5
+  ) +
+  geom_jitter(
+    shape = 21,
+    width = 0.08,
+    size = 3.0,
+    color = "black",
+    stroke = 0.5,
+    alpha = 0.8
+  ) +
+  facet_wrap2(~ Group, nrow = 1) +
+  scale_fill_manual(values = c("Control" = "#B7D9F2", "PS-NP" = "#F2B6A7")) +
+  scale_y_continuous(expand = expansion(mult = c(0.02, 0.22))) +
+  theme_classic(base_size = 15) +
+  labs(
+    x = "Condition",
+    y = "Shannon Index"
+  ) +
+  theme(
+    axis.title = element_text(size = 15),
+    axis.text.x = element_text(size = 15, face = "bold", color = "black"),
+    axis.text.y = element_text(size = 14.5, face = "bold", color = "black"),
+    strip.background = element_blank(),
+    strip.text = element_text(size = 19, face = "bold", colour = "black", margin = margin(t = 6, b = 6)),
+    legend.position = "none"
+  )
+
+combined_shannon_brackets <- build_two_group_brackets(
+  combined_alpha %>%
+    left_join(combined_shannon_stats %>% select(Group, label), by = "Group"),
+  facet_col = "Group",
+  value_col = "Shannon",
+  label_col = "label"
+)
+
+combined_shannon_plot <- add_two_group_brackets(combined_shannon_plot, combined_shannon_brackets, text_size = 7.5)
+combined_shannon_plot <- finalize_thesis_plot(combined_shannon_plot, legend = "none") +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(size = 22, face = "bold", colour = "black", margin = margin(t = 8, b = 8)),
+    axis.title.y = element_text(size = 24, face = "bold", colour = "black"),
+    axis.text.x = element_text(size = 18.5, face = "bold", colour = "black"),
+    axis.text.y = element_text(size = 17.0, face = "bold", colour = "black")
+  )
+
+combined_shannon_plot
+```
+
+# Step 6: Save Combined Shannon Plot
+
+```{r}
+ggsave(
+  file.path(combined_output_dir, "combined_shannon_groups1to4.png"),
+  plot = combined_shannon_plot,
+  width = 15.5,
+  height = 8.2,
+  dpi = 600
+)
+```
+
+# Step 7: Combined Simpson Plot
+
+```{r combined_simpson_plot, fig.width=15.5, fig.height=8.2}
+combined_simpson_plot <- ggplot(combined_alpha, aes(x = Condition, y = Simpson, fill = Condition)) +
+  stat_boxplot(
+    geom = "errorbar",
+    width = 0.18,
+    linewidth = 0.8,
+    coef = 1.5
+  ) +
+  geom_boxplot(
+    outlier.shape = NA,
+    width = 0.5,
+    color = "black",
+    linewidth = 0.8,
+    coef = 1.5
+  ) +
+  geom_jitter(
+    shape = 21,
+    width = 0.08,
+    size = 3.0,
+    color = "black",
+    stroke = 0.5,
+    alpha = 0.8
+  ) +
+  facet_wrap2(~ Group, nrow = 1) +
+  scale_fill_manual(values = c("Control" = "#B7D9F2", "PS-NP" = "#F2B6A7")) +
+  scale_y_continuous(expand = expansion(mult = c(0.02, 0.22))) +
+  theme_classic(base_size = 15) +
+  labs(
+    x = "Condition",
+    y = "Simpson Index"
+  ) +
+  theme(
+    axis.title = element_text(size = 15),
+    axis.text.x = element_text(size = 15, face = "bold", color = "black"),
+    axis.text.y = element_text(size = 14.5, face = "bold", color = "black"),
+    strip.background = element_blank(),
+    strip.text = element_text(size = 19, face = "bold", colour = "black", margin = margin(t = 6, b = 6)),
+    legend.position = "none"
+  )
+
+combined_simpson_brackets <- build_two_group_brackets(
+  combined_alpha %>%
+    left_join(combined_simpson_stats %>% select(Group, label), by = "Group"),
+  facet_col = "Group",
+  value_col = "Simpson",
+  label_col = "label"
+)
+
+combined_simpson_plot <- add_two_group_brackets(combined_simpson_plot, combined_simpson_brackets, text_size = 7.5)
+combined_simpson_plot <- finalize_thesis_plot(combined_simpson_plot, legend = "none") +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(size = 22, face = "bold", colour = "black", margin = margin(t = 8, b = 8)),
+    axis.title.y = element_text(size = 24, face = "bold", colour = "black"),
+    axis.text.x = element_text(size = 18.5, face = "bold", colour = "black"),
+    axis.text.y = element_text(size = 17.0, face = "bold", colour = "black")
+  )
+
+combined_simpson_plot
+```
+
+# Step 8: Save Combined Simpson Plot
+
+```{r}
+ggsave(
+  file.path(combined_output_dir, "combined_simpson_groups1to4.png"),
+  plot = combined_simpson_plot,
+  width = 15.5,
+  height = 8.2,
+  dpi = 600
+)
+```
+
+# Step 9: Read Saved Top-10 Plot Data from Groups 1-4
+
+```{r}
+group1_top10 <- read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group_1_outputs/group1_top10_taxa_barplot_data.csv")
+group2_top10 <- read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 2 Outputs/group2_top10_taxa_barplot_data.csv")
+group3_top10 <- read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 3 Outputs/group3_top10_taxa_barplot_data.csv")
+group4_top10 <- read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 4 Outputs/group4_top10_taxa_barplot_data.csv")
+```
+
+# Step 10: Combine Top-10 Plot Data
+
+```{r}
+combined_top10 <- bind_rows(
+  group1_top10 %>% mutate(Group = "Group 1"),
+  group2_top10 %>% mutate(Group = "Group 2"),
+  group3_top10 %>% mutate(Group = "Group 3"),
+  group4_top10 %>% mutate(Group = "Group 4")
+) %>%
+  mutate(
+    Condition = factor(Condition, levels = c("Control", "PS-NP")),
+    Group = factor(Group, levels = c("Group 1", "Group 2", "Group 3", "Group 4")),
+    ConditionPosition = ifelse(Condition == "Control", 1.0, 2.8)
+  )
+
+head(combined_top10)
+table(combined_top10$Group, combined_top10$Condition)
+```
+
+# Step 11: Set Order and Shared Palette for Combined Top-10 Genera Plot
+
+```{r}
+genus_order <- combined_top10 %>%
+  group_by(Genus) %>%
+  summarise(TotalAbundance = sum(MeanRelativeAbundance, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(TotalAbundance)) %>%
+  pull(Genus)
+
+stack_order <- genus_order
+legend_order <- rev(stack_order)
+
+combined_top10$Genus <- factor(combined_top10$Genus, levels = stack_order)
+combined_top10$Condition_wrap <- factor(
+  combined_top10$Condition,
+  levels = c("Control", "PS-NP")
+)
+
+combined_top10 <- combined_top10 %>%
+  mutate(
+    Genus_plot = case_when(
+      Group == "Group 1" & as.character(Genus) == "Lactobacillus" ~ "Lactobacillus__Group1",
+      Group == "Group 1" & as.character(Genus) == "Muribaculaceae" ~ "Muribaculaceae__Group1",
+      TRUE ~ as.character(Genus)
+    )
+  )
+
+plot_stack_order <- c(
+  "Lactobacillus__Group1",
+  "Muribaculaceae",
+  "Muribaculaceae__Group1",
+  "Lactobacillus",
+  setdiff(
+    stack_order,
+    c("Muribaculaceae", "Lactobacillus")
+  )
+)
+
+combined_top10$Genus_plot <- factor(combined_top10$Genus_plot, levels = plot_stack_order)
+
+genus_palette <- build_shared_genus_palette_composition(unique(c(
+  as.character(combined_top10$Genus),
+  "Lactobacillus__Group1",
+  "Muribaculaceae__Group1"
+)))
+genus_palette["Lactobacillus__Group1"] <- genus_palette["Lactobacillus"]
+genus_palette["Muribaculaceae__Group1"] <- genus_palette["Muribaculaceae"]
+```
+
+# Step 12: Combined Top-10 Genera Plot
+
+```{r combined_top10_plot, fig.width=24.8, fig.height=15.8}
+combined_taxa_plot <- ggplot(combined_top10, aes(x = Condition_wrap, y = MeanRelativeAbundance, fill = Genus_plot)) +
+  geom_col(
+    position = position_fill(reverse = TRUE),
+    width = 0.42,
+    color = "white",
+    linewidth = 0.08
+  ) +
+  facet_grid(~ Group) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1),
+    breaks = seq(0, 1, by = 0.1),
+    limits = c(0, 1),
+    expand = c(0, 0)
+  ) +
+  scale_fill_manual(
+    values = genus_palette,
+    breaks = legend_order,
+    labels = legend_order
+  ) +
+  labs(
+    title = wrap_figure_title("Ten Most Abundant Genera by Mean Relative Abundance in Control and PS-NP Samples Across Groups 1-4"),
+    x = NULL,
+    y = "Mean Relative Abundance (%)",
+    fill = "Genus"
+  ) +
+  theme_classic(base_size = 15) +
+  theme(
+    plot.title = element_text(size = 17, hjust = 0.5, face = "plain", lineheight = 1.05, margin = margin(b = 10)),
+    axis.title = element_text(size = 15),
+    axis.text.x = element_text(size = 10, color = "black"),
+    axis.text.y = element_text(size = 12, color = "black"),
+    strip.background = element_blank(),
+    strip.text = element_text(size = 13, face = "plain"),
+    panel.spacing.x = grid::unit(1.35, "cm"),
+    legend.title = element_text(size = 12.5),
+    legend.text = element_text(size = 9, face = "italic"),
+    legend.position = "right",
+    legend.direction = "vertical",
+    legend.box = "vertical",
+    legend.key.height = grid::unit(0.28, "cm"),
+    legend.key.width = grid::unit(0.35, "cm"),
+    legend.spacing.y = grid::unit(0.05, "cm")
+  ) +
+  guides(fill = guide_legend(ncol = 1))
+
+combined_taxa_plot <- finalize_thesis_plot(combined_taxa_plot, legend = "italic") +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(size = 24.0, face = "bold", colour = "black", margin = margin(b = 16)),
+    axis.title.y = element_text(size = 30.0, face = "bold", colour = "black"),
+    axis.text.x = element_text(size = 25.0, face = "bold", colour = "black"),
+    axis.text.y = element_text(size = 18.4, face = "bold", colour = "black"),
+    legend.title = element_text(size = 31.0, face = "bold"),
+    legend.text = element_text(size = 25.0, face = "italic"),
+    legend.key.height = grid::unit(1.30, "cm"),
+    legend.key.width = grid::unit(1.02, "cm"),
+    legend.spacing.y = grid::unit(0.34, "cm"),
+    legend.box = "vertical"
+  )
+
+combined_taxa_plot
+```
+
+# Step 13: Save Combined Top-10 Genera Plot
+
+```{r}
+ggsave(
+  file.path(combined_output_dir, "combined_top10_taxa_groups1to4.png"),
+  plot = combined_taxa_plot,
+  width = 26.2,
+  height = 16.4,
+  dpi = 600
+)
+```
+
+# Step 14: Read Saved Selected-Genus Barplot Data from Groups 1-4
+
+```{r}
+group1_selected_genus_barplot <- read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group_1_outputs/group1_selected_genus_barplot_data_top50.csv")
+group2_selected_genus_barplot <- read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 2 Outputs/group2_selected_genus_barplot_data_top50.csv")
+group3_selected_genus_barplot <- read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 3 Outputs/group3_selected_genus_barplot_data_top50.csv")
+group4_selected_genus_barplot <- read.csv("/Users/simarjawanda/Library/CloudStorage/OneDrive-UBC/R Analysis/Group 4 Outputs/group4_selected_genus_barplot_data_top50_rawp.csv")
+```
+
+# Step 15: Combine Selected-Genus Mean-Abundance Data Across Groups
+
+```{r}
+combined_selected_genus_barplot <- bind_rows(
+  group1_selected_genus_barplot %>% mutate(Group = "Group 1"),
+  group2_selected_genus_barplot %>% mutate(Group = "Group 2"),
+  group3_selected_genus_barplot %>% mutate(Group = "Group 3"),
+  group4_selected_genus_barplot %>% mutate(Group = "Group 4")
+) %>%
+  mutate(
+    Condition = factor(Condition, levels = c("Control", "PS-NP")),
+    Group = factor(Group, levels = c("Group 1", "Group 2", "Group 3", "Group 4")),
+    ConditionPosition = dplyr::if_else(Condition == "Control", 0.55, 3.85)
+  )
+
+selected_genus_legend_order <- combined_selected_genus_barplot %>%
+  group_by(DisplayGenus) %>%
+  summarise(TotalAbundance = sum(MeanRelativeAbundance, na.rm = TRUE), .groups = "drop") %>%
+  arrange(TotalAbundance) %>%
+  pull(DisplayGenus)
+
+selected_genus_stack_order <- rev(selected_genus_legend_order)
+
+combined_selected_genus_barplot$DisplayGenus <- factor(
+  combined_selected_genus_barplot$DisplayGenus,
+  levels = selected_genus_stack_order
+)
+
+selected_genus_palette <- build_shared_genus_palette_followup(levels(combined_selected_genus_barplot$DisplayGenus))
+```
+
+# Step 16: Combined Mean-Abundance Barplot for Selected Follow-Up Genera
+
+```{r combined_selected_genus_barplot, fig.width=24.4, fig.height=20.8}
+combined_selected_genus_barplot_plot <- ggplot(
+  combined_selected_genus_barplot,
+  aes(x = ConditionPosition, y = MeanRelativeAbundance, fill = DisplayGenus)
+) +
+  geom_col(
+    position = position_stack(reverse = TRUE),
+    width = 0.92,
+    color = "#F8F8F8",
+    linewidth = 0.08
+  ) +
+  facet_grid(~ Group) +
+  scale_x_continuous(
+    breaks = c(0.55, 3.85),
+    labels = c("Control", "PS-NP"),
+    limits = c(-0.05, 4.45),
+    expand = c(0, 0)
+  ) +
+  scale_y_continuous(
+    labels = percent_format(accuracy = 0.1),
+    breaks = scales::pretty_breaks(n = 10),
+    expand = c(0, 0)
+  ) +
+  scale_fill_manual(
+    values = selected_genus_palette,
+    breaks = selected_genus_legend_order
+  ) +
+  labs(
+    title = wrap_figure_title("Mean Relative Abundance of Candidate Genera Differing Between Control and PS-NP Samples Across Groups 1-4", width = 60),
+    x = "Condition",
+    y = "Mean Relative Abundance (%)",
+    fill = "Genus"
+  ) +
+  theme_classic(base_size = 15) +
+  theme(
+    plot.title = element_text(size = 17, hjust = 0.5, face = "plain", lineheight = 1.05, margin = margin(b = 10)),
+    axis.title = element_text(size = 15),
+    axis.text.x = element_text(size = 11, color = "black"),
+    axis.text.y = element_text(size = 12, color = "black"),
+    strip.background = element_blank(),
+    strip.text = element_text(size = 13, face = "plain"),
+    panel.spacing.x = grid::unit(1.35, "cm"),
+    legend.title = element_text(size = 12.5),
+    legend.text = element_text(size = 9.5, face = "italic"),
+    legend.position = "right",
+    legend.direction = "vertical",
+    legend.key.height = grid::unit(0.34, "cm"),
+    plot.title.position = "plot",
+    plot.margin = margin(t = 10, r = 16, b = 12, l = 16)
+  ) +
+  guides(fill = guide_legend(ncol = 1))
+
+combined_selected_genus_barplot_plot <- finalize_thesis_plot(combined_selected_genus_barplot_plot, legend = "italic") +
+  theme(
+    axis.line = element_line(linewidth = 1.35, colour = "black"),
+    axis.ticks = element_line(linewidth = 1.12, colour = "black"),
+    axis.ticks.length = grid::unit(0.22, "cm"),
+    strip.background = element_blank(),
+    strip.text = element_text(size = 42.0, face = "bold", colour = "black", margin = margin(b = 18)),
+    axis.title.y = element_text(size = 50.0, face = "bold", colour = "black", margin = margin(r = 20)),
+    axis.title.x = element_text(size = 26.0, face = "bold", colour = "black", margin = margin(t = 10)),
+    axis.text.x = element_text(size = 34.0, face = "bold", colour = "black", margin = margin(t = 4)),
+    axis.text.y = element_text(size = 24.0, face = "bold", colour = "black"),
+    legend.title = element_text(size = 45.0, face = "bold"),
+    legend.text = element_text(size = 36.0, face = "italic"),
+    legend.key.height = grid::unit(1.65, "cm"),
+    legend.key.width = grid::unit(1.26, "cm"),
+    legend.spacing.y = grid::unit(0.34, "cm"),
+    legend.box = "vertical"
+  )
+
+combined_selected_genus_barplot_plot
+```
+
+# Step 17: Save Combined Selected-Genus Barplot
+
+```{r}
+write.csv(
+  combined_selected_genus_barplot,
+  file.path(combined_output_dir, "combined_selected_genus_barplot_data_groups1to4.csv"),
+  row.names = FALSE
+)
+
+ggsave(
+  file.path(combined_output_dir, "combined_selected_genus_barplot_groups1to4.png"),
+  plot = combined_selected_genus_barplot_plot,
+  width = 25.8,
+  height = 21.8,
+  dpi = 600
+)
+```
