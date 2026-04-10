@@ -971,6 +971,29 @@ pcoa_plot <- finalize_thesis_plot(pcoa_plot, legend = "plain") +
     legend.key.height = grid::unit(1.1, "cm"),
     legend.spacing.y = grid::unit(0.24, "cm"),
     legend.box = "vertical"
+  ) +
+  guides(
+    fill = guide_legend(
+      order = 2,
+      override.aes = list(
+        shape = 21,
+        size = 6.4,
+        color = "black",
+        stroke = 0.9,
+        alpha = 0.95,
+        fill = c("Control" = "#B7D9F2", "PS-NP" = "#F2B6A7")
+      )
+    ),
+    shape = guide_legend(
+      order = 1,
+      override.aes = list(
+        fill = "white",
+        size = 6.8,
+        color = "black",
+        stroke = 0.9,
+        alpha = 0.95
+      )
+    )
   )
 
 pcoa_plot
