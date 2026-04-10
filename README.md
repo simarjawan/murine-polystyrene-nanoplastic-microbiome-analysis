@@ -34,17 +34,9 @@ This folder contains all tracked R Markdown files for the downstream R analyses.
 - `Top30_Sensitivity_Analysis.Rmd`
   This script runs the top-30 sensitivity analysis across Groups 1 to 4.
 
-- `Group_1_LEfSe_LDA1.Rmd`
-  This is the exploratory LEfSe workflow for Group 1 using an LDA threshold of 1.
-
-- `Group_2_LEfSe_LDA1.Rmd`
-  This is the exploratory LEfSe workflow for Group 2 using an LDA threshold of 1.
-
-- `Group_3_LEfSe_LDA1.Rmd`
-  This is the exploratory LEfSe workflow for Group 3 using an LDA threshold of 1.
-
-- `Group_4_LEfSe_LDA1.Rmd`
-  This is the exploratory LEfSe workflow for Group 4 using an LDA threshold of 1.
+- `LEfSe LDA1 Analysis/`
+  This folder contains the exploratory LEfSe scripts run with an LDA threshold of 1:
+  `Group_1_LEfSe_LDA1.Rmd`, `Group_2_LEfSe_LDA1.Rmd`, `Group_3_LEfSe_LDA1.Rmd` and `Group_4_LEfSe_LDA1.Rmd`.
 
 ### `QIIME2 Analysis/`
 
@@ -54,7 +46,7 @@ This folder is reserved for the QIIME2 side of the project. It is included so th
 
 1. Start in `R Analysis/` with the main group-level file you need.
 2. Use `Group_2_Exploratory_By_Project.Rmd` only if you want the project-separated exploratory view for Group 2.
-3. Use `Top30_Sensitivity_Analysis.Rmd` and the `Group_*_LEfSe_LDA1.Rmd` files for supporting sensitivity or exploratory analyses rather than the main thesis workflow.
+3. Use `Top30_Sensitivity_Analysis.Rmd` and the files in `LEfSe LDA1 Analysis/` for supporting sensitivity or exploratory analyses rather than the main thesis workflow.
 4. Use `Combined_Supplementary_Figures.Rmd` after the group-level outputs it depends on have already been generated locally.
 
 ## Important Notes
